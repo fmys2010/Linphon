@@ -37,12 +37,89 @@ To start PsiphonLinux after a manual install, ensure you are in the directory wh
 ### Automatic Install
 Run `sudo psiphon` anywhere in the terminal to start psiphon. Once ran, Psiphon will begin running at `127.0.0.1:8081` to handle http and https requests whereas the `127.0.0.1:1081` will handle SOCKS 4/5 requests.
 
+## Repository layout
+- Repo root: original public shell entrypoints and config (`plinstaller2`, `pluninstaller`, `psiphon`, `psiphon.config`, `README.md`).
+- `archive/`: older manual-install flow and archived binaries/scripts kept for compatibility and reference.
+- `scripts/`: repo-local executable wrappers and helper shell scripts, including the public `bash scripts/psiphon-mg.sh` entrypoint.
+- `tests/`: shell black-box tests and the fake tunnel-core used for deterministic offline verification.
+- `tools/psiphon-mg/`: Go implementation of the repo-local manager (`cmd/` entrypoint, `internal/` package code, optional local `bin/` build output).
+- `.work/`: ignored runtime/test artifacts only. It is safe to delete and should not be treated as source.
+
+The current layout intentionally keeps the original top-level install/run files where they are, while placing repo-local manager code under `scripts/`, `tests/`, and `tools/`.
+
+## Repo-local region manager (`psiphon mg core v1.0`)
+This repository also includes a repo-local manager for single-region start, switch, stop, and status flows without changing the global installer scripts. The manager keeps its runtime state under `.work/psiphon-mg`, manages exactly one child process at a time, uses the normal proxy ports (`8081` and `1081`) by default, and waits for a tunnel-level readiness signal (`Tunnels` notice) instead of treating listener bind notices alone as ready.
+
+The public entrypoint is now the Go-backed wrapper at `bash scripts/psiphon-mg.sh`. It expects a compiled binary at `tools/psiphon-mg/bin/psiphon-mg` (or a path provided via `PSIPHON_MG_GO_BINARY`) and no longer falls back to the legacy shell manager.
+
+### Manager commands
+- `bash scripts/psiphon-mg.sh start US` starts a repo-local Psiphon child for the `US` region.
+- `bash scripts/psiphon-mg.sh switch CA` switches the active child to `CA` while keeping a single active region.
+- `bash scripts/psiphon-mg.sh stop` stops the active child. Running it twice is safe.
+- `bash scripts/psiphon-mg.sh status` prints the current manager state, active region, pid, ports, and notice-derived readiness flags.
+- `bash scripts/psiphon-mg.sh current-region` prints only the active region and exits non-zero if nothing live is running.
+
+### Manager examples
+Start with the repo-local binary search path and default ports:
+
+```bash
+bash scripts/psiphon-mg.sh start US
+bash scripts/psiphon-mg.sh status
+```
+
+Start with an explicit binary and custom runtime root:
+
+```bash
+bash scripts/psiphon-mg.sh start JP \
+  --binary ./archive/psiphon-tunnel-core-x86_64 \
+  --runtime-root ./.work/psiphon-mg-demo
+```
+
+Switch regions while keeping stable client-facing ports:
+
+```bash
+bash scripts/psiphon-mg.sh switch DE
+bash scripts/psiphon-mg.sh current-region
+```
+
+Provide the tunnel-core binary explicitly or place it in the repo/runtime search path:
+
+```bash
+bash scripts/psiphon-mg.sh start SG \
+	--binary ./archive/psiphon-tunnel-core-x86_64
+```
+
+Override ports or startup wait time when needed:
+
+```bash
+bash scripts/psiphon-mg.sh start GB \
+  --http-port 28081 \
+  --socks-port 21081 \
+  --ready-timeout-seconds 45
+```
+
+The manager is separate from the global `psiphon`, `plinstaller2`, and `pluninstaller` flow. It is intended for repo-local supervision and testing, and `status` only reports process state plus notice-derived listener and tunnel signals; it does not claim full end-to-end connectivity.
+
+For security, the Go manager currently rejects `--download-if-missing` / `--download-url` instead of downloading and executing an unverified tunnel-core binary. Build or provide the binary explicitly.
+
+### Go migration build note
+When a Go toolchain is available, build the parity binary into the repo-local wrapper path:
+
+```bash
+mkdir -p tools/psiphon-mg/bin
+(cd tools/psiphon-mg && go build -o ../../tools/psiphon-mg/bin/psiphon-mg ./cmd/psiphon-mg)
+```
+
+After that, the existing `bash scripts/psiphon-mg.sh ...` commands automatically exercise the Go manager.
+
 ## FAQ
 ### How do I connect to a proxy in a browser?
 When using Psiphon in a browser you need to navigate to the browser settings and locate the proxy settings for your browser. Once there, enter the localhost ip address with port 8081 appended to it in the proxy settings exactly like `127.0.0.1:8081` for the http and https proxy. Repeat the same for SOCKS 4/5 proxy except the port will be 1081 and will look like `127.0.0.1:1081`. To verify, search `https://whatismyipaddress.com/` and ensure that it is not the same as your original ip.
 
 ### How do I choose a region to connect to?
-You will need to edit the `psiphon.config` file and change the `"EgressRegion":"US",` to your desired region by replacing the `US` with any valid country code that has a Psiphon server. At the time of writing, all the valid country codes are `"AT","BE","BG","CA","CH","CZ","DE","DK","EE","ES","FI","FR","GB","HU","IE","IN","IT","JP","LV","NL","NO","PL","RO","RS","SE","SG","SK","US"`. Depending on which installation method you used, the file will be located in different places. If installed automatically it will be found at `/etc/psiphon/psiphon.config`. If installed manually, it should be in the folder where you installed Psiphon under the name `psiphon.config`.
+If you are using the repo-local manager introduced above, switch regions with commands such as `bash scripts/psiphon-mg.sh start US` or `bash scripts/psiphon-mg.sh switch JP`. That manager keeps one active region at a time and handles the generated per-run config for you.
+
+If you are using the older global/manual flow instead of the repo-local manager, then edit the `psiphon.config` file and change the `"EgressRegion":"US",` value to your desired region by replacing `US` with any valid country code that has a Psiphon server. At the time of writing, all the valid country codes are `"AT","BE","BG","CA","CH","CZ","DE","DK","EE","ES","FI","FR","GB","HU","IE","IN","IT","JP","LV","NL","NO","PL","RO","RS","SE","SG","SK","US"`. Depending on which installation method you used, the file will be located in different places. If installed automatically it will be found at `/etc/psiphon/psiphon.config`. If installed manually, it should be in the folder where you installed Psiphon under the name `psiphon.config`.
 
 ## Changelog
 
