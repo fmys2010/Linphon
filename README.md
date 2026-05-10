@@ -1,144 +1,234 @@
-# PsiphonLinux v2.11 Beta
+# Linphon
 
-A simple way to run the free Psiphon VPN tool on Linux for an uncensored connection to the internet. This repository includes all the scripts and files in order to run Psiphon on linux as well as quality of life scripts which will be described below.
+Linphon 是一个面向 Linux 的 Psiphon 封装项目，目标是把 **全局安装使用** 和 **仓库内单地区管理/测试** 两条路径整理清楚，同时尽量保留原有命令入口的兼容性。
 
-## Ways to install Psiphon Linux
-There are two ways to install Psiphon for linux, the recomended way is the automatic global installation, but if you would like to install it manually to a specific folder you are able to do that.
+> 当前仓库已经完成品牌改名为 **Linphon**，但为了兼容旧使用方式，`psiphon`、`plinstaller2`、`pluninstaller` 等入口名暂时保持不变。
 
-## Manual Installation (Outdated Archive)
-1. Ensure git is installed. If git is not installed, look up the installation guide for your Linux distro
-2. Open a terminal and run the following commands
-3. `git clone https://github.com/SpherionOS/PsiphonLinux.git` Clones the PsiphonLinux repository
-4. `cd PsiphonLinux/archive` Changes the directory to the PsiphonLinux archive
-5. `sudo chmod +x psiphon-tunnel-core-x86_64` Gives the executable permission to the psiphon binary
-6. `sudo chmod +x psiphon.sh` Gives the executable permission to the psiphon startup script
+## 项目提供什么
 
-## Automatic Global Installation Alpha (Recommended)
-1. Ensure wget is installed. If wget is not installed, look up the installation guide for your Linux distro
-2. Open a terminal to a location you would like to store the installation script (e.g. /home/user/Downloads/) and run the following commands
-3. `wget https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/main/plinstaller2` downloads installation script to the current directory
-4. `sudo sh plinstaller2` runs the installation script as root. This is necessary to install psiphon in `/usr/bin` and to add the executable permission
-5. `plinstaller2` is able to be safely removed with `sudo rm -rf plinstaller2` if desired as it is no longer used
+- 一个推荐的 **全局安装流程**：把 `psiphon-tunnel-core-x86_64`、配置文件和启动脚本安装到固定位置，之后可直接运行 `sudo psiphon`
+- 一个仓库内的 **repo-local 管理器**：通过 `bash scripts/psiphon-mg.sh` 做 `start / switch / stop / status / current-region`
+- 一套 **离线可重复测试**：`tests/test-psiphon-mg.sh` 与 `tests/test-multi-instance-harness.sh`
+- 一个保留中的 **archive 手动流程**：用于参考旧版手动目录安装方案
 
-## Installing the latest version of Psiphon
-1. Navigate to the directory where `psiphon-tunnel-core-x86_64` is located
-2. Delete the old version with `sudo rm -rf psiphon-tunnel-core-x86_64`
-3. Download the newest version by pasting `wget https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64`
-4. Add the executable permission to it by `sudo chmod +x psiphon-tunnel-core-x86_64`
+## 两种使用方式
 
-## Uninstallation Procedure
-1. Run `sudo sh pluninstaller` in the directory where the `plinstaller2` installation script was first downloaded
-2. If the `pluninstaller` file cannot be found, run `wget https://raw.githubusercontent.com/SpherionOS/PsiphonLinux/refs/heads/main/pluninstaller` to download the script, and then repeat the step above
-
-## Starting Psiphon
-### Manual Install
-To start PsiphonLinux after a manual install, ensure you are in the directory where you installed Psiphon by running `ls` in the terminal and verifying that there are psiphon files there. Once verified, the command to start Psiphon VPN with the provided config file is `./'psiphon-tunnel-core-x86_64' -config psiphon.config`. Once ran, Psiphon will begin running as a local proxy and the port 8081 will handle http and https requests whereas the port 1081 will handle SOCKS 4/5 requests. 
-
-### Automatic Install
-Run `sudo psiphon` anywhere in the terminal to start psiphon. Once ran, Psiphon will begin running at `127.0.0.1:8081` to handle http and https requests whereas the `127.0.0.1:1081` will handle SOCKS 4/5 requests.
-
-## Repository layout
-- Repo root: original public shell entrypoints and config (`plinstaller2`, `pluninstaller`, `psiphon`, `psiphon.config`, `README.md`).
-- `archive/`: older manual-install flow and archived binaries/scripts kept for compatibility and reference.
-- `scripts/`: repo-local executable wrappers and helper shell scripts, including the public `bash scripts/psiphon-mg.sh` entrypoint.
-- `tests/`: shell black-box tests and the fake tunnel-core used for deterministic offline verification.
-- `tools/psiphon-mg/`: Go implementation of the repo-local manager (`cmd/` entrypoint, `internal/` package code, optional local `bin/` build output).
-- `.work/`: ignored runtime/test artifacts only. It is safe to delete and should not be treated as source.
-
-The current layout intentionally keeps the original top-level install/run files where they are, while placing repo-local manager code under `scripts/`, `tests/`, and `tools/`.
-
-## Repo-local region manager (`psiphon mg core v1.0`)
-This repository also includes a repo-local manager for single-region start, switch, stop, and status flows without changing the global installer scripts. The manager keeps its runtime state under `.work/psiphon-mg`, manages exactly one child process at a time, uses the normal proxy ports (`8081` and `1081`) by default, and waits for a tunnel-level readiness signal (`Tunnels` notice) instead of treating listener bind notices alone as ready.
-
-The public entrypoint is now the Go-backed wrapper at `bash scripts/psiphon-mg.sh`. It expects a compiled binary at `tools/psiphon-mg/bin/psiphon-mg` (or a path provided via `PSIPHON_MG_GO_BINARY`) and no longer falls back to the legacy shell manager.
-
-### Manager commands
-- `bash scripts/psiphon-mg.sh start US` starts a repo-local Psiphon child for the `US` region.
-- `bash scripts/psiphon-mg.sh switch CA` switches the active child to `CA` while keeping a single active region.
-- `bash scripts/psiphon-mg.sh stop` stops the active child. Running it twice is safe.
-- `bash scripts/psiphon-mg.sh status` prints the current manager state, active region, pid, ports, and notice-derived readiness flags.
-- `bash scripts/psiphon-mg.sh current-region` prints only the active region and exits non-zero if nothing live is running.
-
-### Manager examples
-Start with the repo-local binary search path and default ports:
+### 1）全局安装（推荐给普通使用者）
 
 ```bash
-bash scripts/psiphon-mg.sh start US
-bash scripts/psiphon-mg.sh status
+wget https://raw.githubusercontent.com/fmys2010/Linphon/main/plinstaller2
+sudo sh plinstaller2
+sudo psiphon
 ```
 
-Start with an explicit binary and custom runtime root:
+默认情况下：
+
+- HTTP / HTTPS 代理：`127.0.0.1:8081`
+- SOCKS4/5 代理：`127.0.0.1:1081`
+
+如果要卸载：
 
 ```bash
-bash scripts/psiphon-mg.sh start JP \
-  --binary ./archive/psiphon-tunnel-core-x86_64 \
-  --runtime-root ./.work/psiphon-mg-demo
+wget https://raw.githubusercontent.com/fmys2010/Linphon/main/pluninstaller
+sudo sh pluninstaller
 ```
 
-Switch regions while keeping stable client-facing ports:
+### 2）仓库内管理（推荐给开发、切区测试、验证）
+
+Linphon 现在还包含一个 repo-local 的地区管理器，适合在仓库目录内做：
+
+- 单地区启动
+- 地区切换
+- 状态查看
+- 自动化测试 / 验证
+
+管理器公共入口保持为：
 
 ```bash
-bash scripts/psiphon-mg.sh switch DE
-bash scripts/psiphon-mg.sh current-region
+bash scripts/psiphon-mg.sh
 ```
 
-Provide the tunnel-core binary explicitly or place it in the repo/runtime search path:
+它默认期望 Go 二进制位于：
+
+```text
+tools/psiphon-mg/bin/psiphon-mg
+```
+
+如果没有该二进制，也可以通过环境变量指定：
 
 ```bash
-bash scripts/psiphon-mg.sh start SG \
-	--binary ./archive/psiphon-tunnel-core-x86_64
+PSIPHON_MG_GO_BINARY=/path/to/psiphon-mg bash scripts/psiphon-mg.sh status
 ```
 
-Override ports or startup wait time when needed:
+## 快速开始（repo-local 管理器）
 
-```bash
-bash scripts/psiphon-mg.sh start GB \
-  --http-port 28081 \
-  --socks-port 21081 \
-  --ready-timeout-seconds 45
-```
-
-The manager is separate from the global `psiphon`, `plinstaller2`, and `pluninstaller` flow. It is intended for repo-local supervision and testing, and `status` only reports process state plus notice-derived listener and tunnel signals; it does not claim full end-to-end connectivity.
-
-For security, the Go manager currently rejects `--download-if-missing` / `--download-url` instead of downloading and executing an unverified tunnel-core binary. Build or provide the binary explicitly.
-
-### Go migration build note
-When a Go toolchain is available, build the parity binary into the repo-local wrapper path:
+### 构建 Go 管理器
 
 ```bash
 mkdir -p tools/psiphon-mg/bin
 (cd tools/psiphon-mg && go build -o ../../tools/psiphon-mg/bin/psiphon-mg ./cmd/psiphon-mg)
 ```
 
-After that, the existing `bash scripts/psiphon-mg.sh ...` commands automatically exercise the Go manager.
+### 启动某个地区
 
-## FAQ
-### How do I connect to a proxy in a browser?
-When using Psiphon in a browser you need to navigate to the browser settings and locate the proxy settings for your browser. Once there, enter the localhost ip address with port 8081 appended to it in the proxy settings exactly like `127.0.0.1:8081` for the http and https proxy. Repeat the same for SOCKS 4/5 proxy except the port will be 1081 and will look like `127.0.0.1:1081`. To verify, search `https://whatismyipaddress.com/` and ensure that it is not the same as your original ip.
+```bash
+bash scripts/psiphon-mg.sh start US \
+  --binary ./archive/psiphon-tunnel-core-x86_64
+```
 
-### How do I choose a region to connect to?
-If you are using the repo-local manager introduced above, switch regions with commands such as `bash scripts/psiphon-mg.sh start US` or `bash scripts/psiphon-mg.sh switch JP`. That manager keeps one active region at a time and handles the generated per-run config for you.
+### 切换地区
 
-If you are using the older global/manual flow instead of the repo-local manager, then edit the `psiphon.config` file and change the `"EgressRegion":"US",` value to your desired region by replacing `US` with any valid country code that has a Psiphon server. At the time of writing, all the valid country codes are `"AT","BE","BG","CA","CH","CZ","DE","DK","EE","ES","FI","FR","GB","HU","IE","IN","IT","JP","LV","NL","NO","PL","RO","RS","SE","SG","SK","US"`. Depending on which installation method you used, the file will be located in different places. If installed automatically it will be found at `/etc/psiphon/psiphon.config`. If installed manually, it should be in the folder where you installed Psiphon under the name `psiphon.config`.
+```bash
+bash scripts/psiphon-mg.sh switch CA
+```
 
-## Changelog
+### 停止
 
-06/10/2024: PsiphonLinux v2.11 Beta
-- Added `pluninstaller` script for uninstallation (Credits to ercerd for the suggestion)
-- Added `pluninstaller` to the `plinstaller2` download and installation list
-- Modified `plinstaller2` to check for successful download of `pluninstaller`
-- Added `Uninstallation Procedure` to the `README.md` 
+```bash
+bash scripts/psiphon-mg.sh stop
+```
 
+### 查看状态
 
-02/08/2024: PsiphonLinux v2.01 Beta
-- Moving into open beta testing. The majority of the code has been tested and found to be in working order from multiple users down. However it is not up to the quality I would like to get it to eventually so for now its in beta
-- Modified `How do I choose a region to connect to?` in the FAQ to provide accurate instructions.
-- Added `"EgressRegion":"US"` to `psiphon.config` to allow accessible changing of regions
+```bash
+bash scripts/psiphon-mg.sh status
+bash scripts/psiphon-mg.sh current-region
+```
 
+## 架构图
 
-19/01/2024: PsiphonLinux v2.0 Alpha
-- Archived all files of PsiphonLinux V1.0 to `/PsiphonLinux/archive/`
-- Changed the psiphon files location to `/usr/bin/` and `/etc/psiphon/` for ease of access allowing the `psiphon` command to be used outside of the local directory
-- Modified the `plinstaller` to reflect these changes
-- Replaced Psiphon Tunnel Core binary source with the official link to the Psiphon repository (Credits to victorgeel)
-- Changed the operating directory of psiphon to `/etc/psiphon/` to provide a cleaner experience
+下面这张图描述了 Linphon 当前的两条主路径：
+
+```mermaid
+flowchart TD
+    U[用户 / 运维] --> G1[全局安装流程<br/>plinstaller2]
+    U --> M1[Repo-local 管理流程<br/>scripts/psiphon-mg.sh]
+
+    G1 --> G2[/etc/psiphon/<br/>psiphon-tunnel-core-x86_64 + psiphon.config]
+    G1 --> G3[/usr/bin/psiphon]
+    G3 --> C1[psiphon-tunnel-core 子进程]
+
+    M1 --> M2[Go 管理器<br/>tools/psiphon-mg/bin/psiphon-mg]
+    M2 --> M3[.work/psiphon-mg/<br/>active.env + runs + notices + logs]
+    M2 --> C1
+
+    R1[根配置<br/>psiphon.config] --> M2
+    R1 --> G2
+
+    C1 --> P1[127.0.0.1:8081<br/>HTTP/HTTPS 代理]
+    C1 --> P2[127.0.0.1:1081<br/>SOCKS4/5 代理]
+
+    T1[tests/test-psiphon-mg.sh] --> M1
+    T2[tests/test-multi-instance-harness.sh] --> H1[scripts/psiphon-multi-instance.sh]
+    H1 --> C1
+```
+
+## 核心目录结构
+
+- **仓库根目录**：兼容性的公共 shell 入口与主配置
+  - `plinstaller2`
+  - `pluninstaller`
+  - `psiphon`
+  - `psiphon.config`
+  - `README.md`
+- **`archive/`**：旧的手动安装流与归档兼容文件
+- **`scripts/`**：仓库内可执行入口和辅助脚本
+  - `scripts/psiphon-mg.sh`
+  - `scripts/psiphon-multi-instance.sh`
+  - `scripts/run-psiphon-staged.sh`
+- **`tests/`**：shell 黑盒测试与 fake tunnel-core
+- **`tools/psiphon-mg/`**：Go 版管理器源码
+- **`.work/`**：运行时/测试产物目录，属于临时状态，可安全删除
+
+## 配置文件 `psiphon.config` 里最重要的字段
+
+通常真正会改的只有这几个：
+
+- `LocalHttpProxyPort`：本地 HTTP/HTTPS 代理端口
+- `LocalSocksProxyPort`：本地 SOCKS 代理端口
+- `EgressRegion`：目标出口地区，例如 `US`、`CA`、`JP`
+
+其他字段（如 `PropagationChannelId`、`SponsorId`、`RemoteServerListUrl`、`RemoteServerListSignaturePublicKey`、`UseIndistinguishableTLS`）更像是 Psiphon 的分发、引导、校验或策略字段，**不要随意改**。
+
+对于多实例/多地区运行场景，还需要额外关注：
+
+- `RemoteServerListDownloadFilename`
+
+它在单实例时通常可以保持固定；但在同机多实例或共享数据目录场景下，应当做隔离，避免多个实例写同一份缓存/续传状态。
+
+## 管理器行为边界
+
+当前 Go 管理器的定位是：
+
+- 一次只管理 **一个 active region**
+- 通过 **外部 stop/start** 切换地区，而不是热重载
+- 使用最新 `Tunnels.count > 0` 作为 tunnel-ready 判定
+- `status` 输出的是进程状态和 notices 派生信号，**不自动等价于完整端到端网络可用性证明**
+
+另外，出于安全考虑，Go 管理器目前 **拒绝** `--download-if-missing` / `--download-url`，不会自动下载并执行未经验证的 tunnel-core 二进制。请显式提供：
+
+```bash
+--binary ./archive/psiphon-tunnel-core-x86_64
+```
+
+## 常见问题
+
+### 浏览器怎么接代理？
+
+浏览器代理设置里填：
+
+- HTTP / HTTPS：`127.0.0.1:8081`
+- SOCKS：`127.0.0.1:1081`
+
+然后访问 IP 检测网站确认出口是否已经变化。
+
+### 怎么切换地区？
+
+如果你使用 repo-local 管理器：
+
+```bash
+bash scripts/psiphon-mg.sh start US
+bash scripts/psiphon-mg.sh switch JP
+```
+
+如果你使用的是旧的全局/手动流程，则修改 `psiphon.config` 里的：
+
+```json
+"EgressRegion": "US"
+```
+
+自动安装后该文件通常位于：
+
+```text
+/etc/psiphon/psiphon.config
+```
+
+### archive 目录还有用吗？
+
+有，但它属于**旧流程/兼容保留**。如果你只是普通使用或开发当前 manager，请优先看主 README 和 `scripts/psiphon-mg.sh`。
+
+## archive 说明
+
+旧版手动流程文档在：
+
+```text
+archive/README.md
+```
+
+如果你必须沿用旧手动安装法，请参考该文档；但主线推荐仍然是：
+
+- 普通使用：`plinstaller2` / `psiphon`
+- 仓库内开发和切区测试：`scripts/psiphon-mg.sh`
+
+## 项目状态说明
+
+Linphon 当前是一个**兼容优先**的演进型仓库：
+
+- 公共 shell 命令入口尽量不破坏
+- repo-local manager 正在向 Go 实现收敛
+- 测试和文档优先服务于“可验证、可切区、可回归”
+
+后续如果要继续深入，一般有两条路线：
+
+1. 继续整理 `tools/psiphon-mg/` 的源码层次和测试覆盖
+2. 进入发布前收口，例如提交、发布说明、长期稳定性回归
