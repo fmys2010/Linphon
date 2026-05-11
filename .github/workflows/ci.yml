@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/psiphon-mg/go.mod
+
+      - name: Ensure fake tunnel core is executable
+        run: chmod +x tests/fake-psiphon-tunnel-core-x86_64
+
+      - name: Run Go tests
+        working-directory: tools/psiphon-mg
+        run: go test ./...
+
+      - name: Run pluninstaller test
+        run: bash tests/test-pluninstaller.sh
+
+      - name: Run psiphon-mg test
+        run: bash tests/test-psiphon-mg.sh
+
+      - name: Run multi-instance harness test
+        run: bash tests/test-multi-instance-harness.sh
