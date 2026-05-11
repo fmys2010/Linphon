@@ -21,8 +21,8 @@ Usage:
 
 Options:
   --binary PATH                 Explicit binary path.
-  --download-if-missing         Download binary if no local candidate is found.
-  --download-url URL            Override binary download URL.
+  --download-if-missing         Disabled until executable authenticity verification exists.
+  --download-url URL            Disabled until executable authenticity verification exists.
   --base-config PATH            Base config template.
   --runtime-root PATH           Runtime root for staged runs.
   --regions CSV                 Override comma-separated region list.
@@ -39,12 +39,12 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --download-if-missing)
-      DOWNLOAD_IF_MISSING=1
-      shift
+      printf '%s\n' '[staged] ERROR: automatic download is disabled until executable authenticity verification exists' >&2
+      exit 66
       ;;
     --download-url)
-      DOWNLOAD_URL=$2
-      shift 2
+      printf '%s\n' '[staged] ERROR: automatic download is disabled until executable authenticity verification exists' >&2
+      exit 66
       ;;
     --base-config)
       BASE_CONFIG=$2

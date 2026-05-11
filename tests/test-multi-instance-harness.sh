@@ -6,6 +6,7 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 HARNESS_SCRIPT="$REPO_ROOT/scripts/psiphon-multi-instance.sh"
 STAGED_SCRIPT="$REPO_ROOT/scripts/run-psiphon-staged.sh"
 FAKE_BINARY="$REPO_ROOT/tests/fake-psiphon-tunnel-core-x86_64"
+REGIONS_CATALOG="$REPO_ROOT/regions.txt"
 TEST_ROOT="$REPO_ROOT/.work/test-harness-offline"
 SINGLE_ROOT="$TEST_ROOT/single"
 STAGED_ROOT="$TEST_ROOT/staged"
@@ -36,8 +37,66 @@ assert_eq() {
   fi
 }
 
+assert_exit_code() {
+  local expected=$1
+  local actual=$2
+  local message=$3
+  if [ "$expected" -ne "$actual" ]; then
+    printf '[test] assertion failed: %s (expected_exit=%s actual_exit=%s)\n' "$message" "$expected" "$actual" >&2
+    exit 1
+  fi
+}
+
 rm -rf "$TEST_ROOT"
 mkdir -p "$TEST_ROOT"
+
+assert_eq 'AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US' "$(awk 'NF && $1 !~ /^#/ { print $1 }' "$REGIONS_CATALOG" | paste -sd, -)" 'shared region catalog order'
+
+printf '[test] verifying disabled download command and flags\n'
+if bash "$HARNESS_SCRIPT" download-binary >"$TEST_ROOT/download.out" 2>"$TEST_ROOT/download.err"; then
+  printf '[test] download-binary unexpectedly succeeded\n' >&2
+  exit 1
+else
+  download_exit=$?
+fi
+assert_exit_code 66 "$download_exit" 'download-binary exit code'
+grep -q 'disabled until executable authenticity verification exists' "$TEST_ROOT/download.err"
+
+if bash "$HARNESS_SCRIPT" run --download-if-missing >"$TEST_ROOT/run-download.out" 2>"$TEST_ROOT/run-download.err"; then
+  printf '[test] run --download-if-missing unexpectedly succeeded\n' >&2
+  exit 1
+else
+  run_download_exit=$?
+fi
+assert_exit_code 66 "$run_download_exit" 'run --download-if-missing exit code'
+grep -q 'disabled until executable authenticity verification exists' "$TEST_ROOT/run-download.err"
+
+if bash "$HARNESS_SCRIPT" run --binary "$FAKE_BINARY" --download-url 'https://example.invalid/core' >"$TEST_ROOT/run-url.out" 2>"$TEST_ROOT/run-url.err"; then
+  printf '[test] run --download-url unexpectedly succeeded\n' >&2
+  exit 1
+else
+  run_url_exit=$?
+fi
+assert_exit_code 66 "$run_url_exit" 'run --download-url exit code'
+grep -q 'disabled until executable authenticity verification exists' "$TEST_ROOT/run-url.err"
+
+if bash "$STAGED_SCRIPT" --download-if-missing >"$TEST_ROOT/staged-download.out" 2>"$TEST_ROOT/staged-download.err"; then
+  printf '[test] staged --download-if-missing unexpectedly succeeded\n' >&2
+  exit 1
+else
+  staged_download_exit=$?
+fi
+assert_exit_code 66 "$staged_download_exit" 'staged --download-if-missing exit code'
+grep -q 'disabled until executable authenticity verification exists' "$TEST_ROOT/staged-download.err"
+
+if bash "$STAGED_SCRIPT" --download-url 'https://example.invalid/core' >"$TEST_ROOT/staged-url.out" 2>"$TEST_ROOT/staged-url.err"; then
+  printf '[test] staged --download-url unexpectedly succeeded\n' >&2
+  exit 1
+else
+  staged_url_exit=$?
+fi
+assert_exit_code 66 "$staged_url_exit" 'staged --download-url exit code'
+grep -q 'disabled until executable authenticity verification exists' "$TEST_ROOT/staged-url.err"
 
 printf '[test] running single-stage offline harness smoke test\n'
 bash "$HARNESS_SCRIPT" run \

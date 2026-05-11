@@ -7,7 +7,8 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DEFAULT_RUNTIME_ROOT="$REPO_ROOT/.work/psiphon-harness"
 DEFAULT_BASE_CONFIG="$REPO_ROOT/psiphon.config"
 DEFAULT_BINARY_DOWNLOAD_URL="https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
-DEFAULT_REGIONS="AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US"
+DEFAULT_REGIONS_FALLBACK="AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US"
+REGIONS_CATALOG_PATH="$REPO_ROOT/regions.txt"
 
 EXIT_USAGE=64
 EXIT_BINARY_NOT_FOUND=65
@@ -17,6 +18,40 @@ EXIT_VALIDATION_FAILED=68
 
 KEEP_RUNNING=0
 declare -a RUN_PIDS=()
+
+load_default_regions() {
+  local csv=
+
+  if [ -r "$REGIONS_CATALOG_PATH" ]; then
+    csv=$(
+      awk '
+        /^[[:space:]]*(#|$)/ { next }
+        {
+          line = $0
+          sub(/^[[:space:]]+/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          if (line == "") {
+            next
+          }
+          if (count > 0) {
+            printf ","
+          }
+          printf "%s", line
+          count++
+        }
+      ' "$REGIONS_CATALOG_PATH" 2>/dev/null
+    ) || csv=
+
+    if [ -n "$csv" ]; then
+      printf '%s' "$csv"
+      return 0
+    fi
+  fi
+
+  printf '%s' "$DEFAULT_REGIONS_FALLBACK"
+}
+
+DEFAULT_REGIONS=$(load_default_regions)
 
 log() {
   printf '[harness] %s\n' "$*"
@@ -35,13 +70,13 @@ Usage:
 
 Commands:
   locate-binary     Resolve a repo-local psiphon-tunnel-core-x86_64 path.
-  download-binary   Download psiphon-tunnel-core-x86_64 into a local path.
+  download-binary   Disabled until executable authenticity verification exists.
   run               Generate isolated configs and launch N instances.
 
 Run options:
   --binary PATH                 Explicit binary path.
-  --download-if-missing         Download binary if no local candidate is found.
-  --download-url URL            Override binary download URL.
+  --download-if-missing         Disabled until executable authenticity verification exists.
+  --download-url URL            Disabled until executable authenticity verification exists.
   --base-config PATH            Base config template (default: ./psiphon.config).
   --runtime-root PATH           Runtime root (default: ./.work/psiphon-harness).
   --run-name NAME               Stable run directory name under runtime root.
@@ -226,6 +261,11 @@ download_binary() {
   chmod +x "$output_path"
 }
 
+download_disabled() {
+  err "automatic download is disabled until executable authenticity verification exists"
+  return "$EXIT_DOWNLOAD_FAILED"
+}
+
 render_instance_config() {
   local base_config=$1
   local output_path=$2
@@ -373,6 +413,7 @@ run_instances() {
   local binary_path=
   local download_if_missing=0
   local download_url=$DEFAULT_BINARY_DOWNLOAD_URL
+  local download_url_requested=0
   local base_config=$DEFAULT_BASE_CONFIG
   local runtime_root=$DEFAULT_RUNTIME_ROOT
   local run_name=
@@ -395,6 +436,7 @@ run_instances() {
         ;;
       --download-url)
         download_url=$2
+        download_url_requested=1
         shift 2
         ;;
       --base-config)
@@ -460,18 +502,14 @@ run_instances() {
   require_non_negative_integer "wait seconds" "$wait_seconds" || return "$EXIT_USAGE"
   require_non_negative_integer "startup grace seconds" "$startup_grace_seconds" || return "$EXIT_USAGE"
 
+  if [ "$download_if_missing" -eq 1 ] || [ "$download_url_requested" -eq 1 ]; then
+    download_disabled
+    return "$EXIT_DOWNLOAD_FAILED"
+  fi
+
   if ! binary_path=$(resolve_binary "$binary_path" "$runtime_root"); then
-    if [ "$download_if_missing" -eq 1 ]; then
-      binary_path="$runtime_root/bin/psiphon-tunnel-core-x86_64"
-      log "downloading binary to $binary_path"
-      if ! download_binary "$binary_path" "$download_url"; then
-        err "failed to download binary"
-        return "$EXIT_DOWNLOAD_FAILED"
-      fi
-    else
-      err "unable to locate psiphon-tunnel-core-x86_64"
-      return "$EXIT_BINARY_NOT_FOUND"
-    fi
+    err "unable to locate psiphon-tunnel-core-x86_64"
+    return "$EXIT_BINARY_NOT_FOUND"
   fi
 
   mkdir -p "$runtime_root/runs"
@@ -665,17 +703,12 @@ main() {
       return "$EXIT_BINARY_NOT_FOUND"
       ;;
     download-binary)
-      local output_path="$DEFAULT_RUNTIME_ROOT/bin/psiphon-tunnel-core-x86_64"
-      local download_url=$DEFAULT_BINARY_DOWNLOAD_URL
-
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --output)
-            output_path=$2
             shift 2
             ;;
           --url)
-            download_url=$2
             shift 2
             ;;
           --help)
@@ -689,12 +722,8 @@ main() {
         esac
       done
 
-      log "downloading binary to $output_path"
-      if ! download_binary "$output_path" "$download_url"; then
-        return "$EXIT_DOWNLOAD_FAILED"
-      fi
-
-      printf '%s\n' "$output_path"
+      download_disabled
+      return "$EXIT_DOWNLOAD_FAILED"
       ;;
     run)
       run_instances "$@"
