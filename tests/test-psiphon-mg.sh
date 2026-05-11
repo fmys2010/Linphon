@@ -41,6 +41,42 @@ assert_file() {
   fi
 }
 
+pid_is_running() {
+  local pid=$1
+  local state=
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+
+  if [ -r "/proc/$pid/stat" ]; then
+    state=$(awk '{ print $3 }' "/proc/$pid/stat" 2>/dev/null || true)
+  else
+    state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  fi
+
+  if [ -n "$state" ]; then
+    [ "$state" != 'Z' ]
+    return
+  fi
+
+  return 0
+}
+
+assert_not_running() {
+  local pid=$1
+  local message=$2
+  local deadline=$((SECONDS + 5))
+
+  while pid_is_running "$pid"; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      printf '[test] assertion failed: %s (pid still alive: %s)\n' "$message" "$pid" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+}
+
 read_status_value() {
   local status_text=$1
   local key=$2
@@ -113,7 +149,8 @@ if [ -d "$STALE_LOCK_ROOT/lock" ]; then
 fi
 
 printf '[test] starting US region\n'
-bash "$MANAGER_SCRIPT" start US \
+HELPER_PID_FILE="$TEST_ROOT/helper.pid"
+FAKE_PSIPHON_HELPER_IGNORE_TERM=1 FAKE_PSIPHON_HELPER_PID_FILE="$HELPER_PID_FILE" bash "$MANAGER_SCRIPT" start US \
   --runtime-root "$RUNTIME_ROOT" \
   --binary "$FAKE_BINARY" \
   --base-config "$BASE_CONFIG" \
@@ -136,6 +173,8 @@ assert_eq 'yes' "$(read_status_value "$status_output" tunnels_notice)" 'tunnels 
 first_pid=$(read_status_value "$status_output" pid)
 first_notices=$(read_status_value "$status_output" notices_path)
 assert_file "$first_notices"
+assert_file "$HELPER_PID_FILE"
+helper_pid=$(tr -d '[:space:]' < "$HELPER_PID_FILE")
 
 printf '[test] verifying start rejects another live region\n'
 if bash "$MANAGER_SCRIPT" start CA \
@@ -181,7 +220,7 @@ first_pid=$refreshed_pid
 first_notices=$refreshed_notices
 
 printf '[test] switching to CA region\n'
-bash "$MANAGER_SCRIPT" switch CA \
+FAKE_PSIPHON_HELPER_IGNORE_TERM=1 FAKE_PSIPHON_HELPER_PID_FILE="$HELPER_PID_FILE" bash "$MANAGER_SCRIPT" switch CA \
   --runtime-root "$RUNTIME_ROOT"
 
 sleep 1
@@ -199,6 +238,7 @@ second_pid=$(read_status_value "$status_output" pid)
 second_notices=$(read_status_value "$status_output" notices_path)
 assert_ne "$first_notices" "$second_notices" 'fresh notices path on region switch'
 assert_ne "$first_pid" "$second_pid" 'new pid on region switch'
+stale_helper_pid=$(tr -d '[:space:]' < "$HELPER_PID_FILE")
 
 printf '[test] verifying stale-state detection\n'
 kill "$second_pid"
@@ -214,6 +254,11 @@ if bash "$MANAGER_SCRIPT" current-region --runtime-root "$RUNTIME_ROOT" >/dev/nu
   exit 1
 fi
 
+if ! pid_is_running "$stale_helper_pid"; then
+  printf '[test] expected stale helper pid to remain alive before recovery: %s\n' "$stale_helper_pid" >&2
+  exit 1
+fi
+
 printf '[test] recovering from stale state with a fresh start\n'
 bash "$MANAGER_SCRIPT" start GB \
   --runtime-root "$RUNTIME_ROOT" \
@@ -224,11 +269,13 @@ bash "$MANAGER_SCRIPT" start GB \
 sleep 1
 
 assert_eq 'GB' "$(bash "$MANAGER_SCRIPT" current-region --runtime-root "$RUNTIME_ROOT")" 'current region after stale recovery'
+assert_not_running "$stale_helper_pid" 'stale helper child cleaned during stale recovery'
 
 printf '[test] stopping active region\n'
 bash "$MANAGER_SCRIPT" stop --runtime-root "$RUNTIME_ROOT"
 status_output=$(bash "$MANAGER_SCRIPT" status --runtime-root "$RUNTIME_ROOT")
 assert_eq 'stopped' "$(read_status_value "$status_output" state)" 'state after stop'
+assert_not_running "$helper_pid" 'helper child stopped with process group'
 
 printf '[test] verifying idempotent stop\n'
 bash "$MANAGER_SCRIPT" stop --runtime-root "$RUNTIME_ROOT"

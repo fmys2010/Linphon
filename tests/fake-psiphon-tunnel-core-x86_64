@@ -4,6 +4,9 @@ set -euo pipefail
 CONFIG_PATH=
 DATA_ROOT=
 NOTICES_PATH=
+HELPER_PID_FILE=${FAKE_PSIPHON_HELPER_PID_FILE:-}
+HELPER_IGNORE_TERM=${FAKE_PSIPHON_HELPER_IGNORE_TERM:-0}
+HELPER_SLEEP_PID=
 
 usage() {
   cat <<'EOF'
@@ -49,7 +52,30 @@ append_notice() {
 
 shutdown() {
   append_notice "Exiting" '{"reason":"signal"}'
+  if [ -n "$HELPER_PID_FILE" ] && [ -f "$HELPER_PID_FILE" ]; then
+    rm -f "$HELPER_PID_FILE"
+  fi
   exit 0
+}
+
+start_helper_child() {
+  if [ -z "$HELPER_PID_FILE" ]; then
+    return
+  fi
+
+  (
+	if [ "$HELPER_IGNORE_TERM" = '1' ]; then
+	  trap ':' TERM
+	  trap 'exit 0' INT
+	else
+	  trap 'exit 0' INT TERM
+	fi
+	while :; do
+	  sleep 1
+	done
+  ) &
+  HELPER_SLEEP_PID=$!
+  printf '%s\n' "$HELPER_SLEEP_PID" > "$HELPER_PID_FILE"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -98,6 +124,8 @@ printf 'egress_region=%s\n' "$EGRESS_REGION" >> "$DATA_ROOT/runtime.info"
 append_notice "ListeningHttpProxyPort" "{\"port\":$HTTP_PORT}"
 append_notice "ListeningSocksProxyPort" "{\"port\":$SOCKS_PORT}"
 append_notice "Tunnels" '{"count":1,"state":"connected-for-test"}'
+
+start_helper_child
 
 trap shutdown INT TERM
 
