@@ -1,13 +1,20 @@
 package mg
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
+
+type processStat struct {
+	state          byte
+	processGroupID int
+}
 
 func makeRunDir(runtimeRoot, region string) (string, error) {
 	if err := os.MkdirAll(filepath.Join(runtimeRoot, "runs"), 0o755); err != nil {
@@ -33,29 +40,113 @@ func waitForTunnelReady(pid int, noticesPath string, timeoutSeconds int) bool {
 }
 
 func stopPID(pid int, timeoutSeconds int) {
-	if pid == 0 || !processAlive(pid) {
+	if pid == 0 || (!processAlive(pid) && !processGroupAlive(pid)) {
 		return
 	}
 
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	for elapsed := 0; processAlive(pid); elapsed++ {
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+	for elapsed := 0; processAlive(pid) || processGroupAlive(pid); elapsed++ {
 		if elapsed >= timeoutSeconds {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
 			break
 		}
 		time.Sleep(time.Second)
 	}
-	for processAlive(pid) {
+	for processAlive(pid) || processGroupAlive(pid) {
 		time.Sleep(time.Second)
 	}
 }
 
+func trackedPIDMatchesState(state activeState) bool {
+	if state.PID <= 0 || !processAlive(state.PID) {
+		return false
+	}
+
+	args := processArgs(state.PID)
+	if args == "" {
+		return false
+	}
+
+	for _, expected := range []string{state.NoticesPath, state.RunDir, state.DataDir} {
+		if expected != "" && strings.Contains(args, expected) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func trackedProcessGroupSurvives(state activeState) bool {
+	return state.PID > 0 && !processAlive(state.PID) && processGroupAlive(state.PID)
+}
+
 func processAlive(pid int) bool {
+	stat, ok := readProcessStat(pid)
+	return ok && stat.state != 'Z'
+}
+
+func processGroupAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || err == syscall.EPERM
+
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		memberPID, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+
+		stat, ok := readProcessStat(memberPID)
+		if ok && stat.processGroupID == pid && stat.state != 'Z' {
+			return true
+		}
+	}
+
+	return false
+}
+
+func readProcessStat(pid int) (processStat, bool) {
+	if pid <= 0 {
+		return processStat{}, false
+	}
+
+	content, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return processStat{}, false
+	}
+
+	closeIndex := bytes.LastIndexByte(content, ')')
+	if closeIndex < 0 || closeIndex+2 >= len(content) {
+		return processStat{}, false
+	}
+
+	fields := strings.Fields(string(content[closeIndex+2:]))
+	if len(fields) < 3 || len(fields[0]) != 1 {
+		return processStat{}, false
+	}
+
+	processGroupID, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return processStat{}, false
+	}
+
+	return processStat{
+		state:          fields[0][0],
+		processGroupID: processGroupID,
+	}, true
 }
 
 func (a *app) launchRegion(region, binaryPath string, opt options) int {
@@ -165,14 +256,24 @@ func (a *app) launchRegion(region, binaryPath string, opt options) int {
 }
 
 func (a *app) stopActiveState(runtimeRoot string, state activeState) {
-	if state.PID != 0 {
+	if trackedPIDMatchesState(state) {
 		stopPID(state.PID, DefaultStopTimeout)
 		a.log("stopped region %s", fallbackRegion(state.Region))
+	} else if trackedProcessGroupSurvives(state) {
+		stopPID(state.PID, DefaultStopTimeout)
+		a.log("stopped surviving process group for region %s", fallbackRegion(state.Region))
+	} else if state.PID != 0 {
+		a.log("tracked pid %d no longer matches active region %s; clearing state without signaling", state.PID, fallbackRegion(state.Region))
 	}
 	_ = removeStateFile(runtimeRoot)
 }
 
 func (a *app) cleanupStaleState(runtimeRoot string, state activeState) {
+	if trackedProcessGroupSurvives(state) {
+		stopPID(state.PID, DefaultStopTimeout)
+		a.log("stopped surviving stale process group for region %s", fallbackRegion(state.Region))
+	}
+
 	if state.PID != 0 {
 		a.log("clearing stale manager state for region %s (pid %d)", fallbackRegion(state.Region), state.PID)
 	} else {

@@ -124,7 +124,7 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 		}
 	}
 
-	if state.PID > 0 && processAlive(state.PID) {
+	if trackedPIDMatchesState(state) {
 		return state, stateRunning
 	}
 	return state, stateStale

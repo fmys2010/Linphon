@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 )
 
-func noticeFlag(noticesPath, needle string) string {
+func noticeFlag(noticesPath, noticeType string) string {
 	if noticesPath == "" {
 		return "no"
 	}
@@ -21,7 +20,11 @@ func noticeFlag(noticesPath, needle string) string {
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		if strings.Contains(scanner.Text(), needle) {
+		var notice tunnelNotice
+		if err := json.Unmarshal(scanner.Bytes(), &notice); err != nil {
+			continue
+		}
+		if notice.NoticeType == noticeType {
 			return "yes"
 		}
 	}
@@ -42,12 +45,8 @@ func tunnelsReady(noticesPath string) bool {
 	seen := false
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
 		var notice tunnelNotice
-		if err := json.Unmarshal([]byte(line), &notice); err != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &notice); err != nil {
 			continue
 		}
 		if notice.NoticeType == "Tunnels" {
