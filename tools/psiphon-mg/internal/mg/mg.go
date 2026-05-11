@@ -11,7 +11,6 @@ import (
 
 const (
 	DefaultBinaryDownloadURL = "https://raw.githubusercontent.com/Psiphon-Labs/psiphon-tunnel-core-binaries/master/linux/psiphon-tunnel-core-x86_64"
-	DefaultRegions           = "AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US"
 	DefaultReadyTimeout      = 30
 	DefaultStopTimeout       = 10
 
@@ -405,7 +404,7 @@ func (a *app) commandStop(stateKind managerState, state activeState, runtimeRoot
 }
 
 func (a *app) validateStartInputs(region string, opt options) int {
-	if !isKnownRegion(region) {
+	if !isKnownRegion(a.repoRoot, region) {
 		a.err("unknown region code: %s", region)
 		return ExitValidationFailed
 	}

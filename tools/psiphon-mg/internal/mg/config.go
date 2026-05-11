@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func readDefaultPorts(configPath string) (int, int) {
@@ -75,13 +74,4 @@ func renderInstanceConfig(baseConfigPath, outputPath string, httpPort, socksPort
 		return err
 	}
 	return os.WriteFile(outputPath, append(encoded, '\n'), 0o644)
-}
-
-func isKnownRegion(region string) bool {
-	for _, known := range strings.Split(DefaultRegions, ",") {
-		if region == strings.TrimSpace(known) {
-			return true
-		}
-	}
-	return false
 }
