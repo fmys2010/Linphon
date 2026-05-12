@@ -66,18 +66,37 @@ func trackedPIDMatchesState(state activeState) bool {
 		return false
 	}
 
-	args := processArgs(state.PID)
-	if args == "" {
+	stat, ok := readProcessStat(state.PID)
+	if !ok || stat.processGroupID != state.PID {
 		return false
 	}
 
-	for _, expected := range []string{state.NoticesPath, state.RunDir, state.DataDir} {
-		if expected != "" && strings.Contains(args, expected) {
-			return true
+	argv := processArgv(state.PID)
+	if len(argv) == 0 {
+		return false
+	}
+
+	expectedPairs := [][2]string{}
+	if state.RunDir != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-config", filepath.Join(state.RunDir, "config.json")})
+	}
+	if state.DataDir != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-dataRootDirectory", state.DataDir})
+	}
+	if state.NoticesPath != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-notices", state.NoticesPath})
+	}
+	if len(expectedPairs) == 0 {
+		return false
+	}
+
+	for _, expectedPair := range expectedPairs {
+		if !argvHasExactFlagValue(argv, expectedPair[0], expectedPair[1]) {
+			return false
 		}
 	}
 
-	return false
+	return true
 }
 
 func trackedProcessGroupSurvives(state activeState) bool {
@@ -147,6 +166,41 @@ func readProcessStat(pid int) (processStat, bool) {
 		state:          fields[0][0],
 		processGroupID: processGroupID,
 	}, true
+}
+
+func processArgv(pid int) []string {
+	if pid <= 0 {
+		return nil
+	}
+
+	content, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil || len(content) == 0 {
+		return nil
+	}
+
+	parts := bytes.Split(content, []byte{0})
+	argv := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		argv = append(argv, string(part))
+	}
+	return argv
+}
+
+func argvHasExactFlagValue(argv []string, flag, value string) bool {
+	if flag == "" || value == "" {
+		return false
+	}
+
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag && argv[i+1] == value {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (a *app) launchRegion(region, binaryPath string, opt options) int {

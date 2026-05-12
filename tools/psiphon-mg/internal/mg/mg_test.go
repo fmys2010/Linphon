@@ -117,6 +117,82 @@ func TestLoadStateTreatsPidReuseMismatchAsStale(t *testing.T) {
 	}
 }
 
+func TestTrackedPIDMatchesStateMatchesExactManagerArgs(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run-US-test")
+	dataDir := filepath.Join(runDir, "data")
+	noticesPath := filepath.Join(runDir, "notices.jsonl")
+	configPath := filepath.Join(runDir, "config.json")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	if err := os.WriteFile(noticesPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("create notices file: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("create config file: %v", err)
+	}
+
+	scriptPath := newSleeperScript(t)
+	cmd := exec.Command(scriptPath,
+		"-config", configPath,
+		"-dataRootDirectory", dataDir,
+		"-notices", noticesPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	defer stopTestProcess(t, cmd)
+
+	state := activeState{
+		PID:         cmd.Process.Pid,
+		RunDir:      runDir,
+		DataDir:     dataDir,
+		NoticesPath: noticesPath,
+	}
+	if !trackedPIDMatchesState(state) {
+		t.Fatalf("expected tracked pid %d to match exact manager args", state.PID)
+	}
+}
+
+func TestTrackedPIDMatchesStateRejectsSubstringOnlyArgvMatch(t *testing.T) {
+	runDir := filepath.Join(t.TempDir(), "run-US-test")
+	dataDir := filepath.Join(runDir, "data")
+	noticesPath := filepath.Join(runDir, "notices.jsonl")
+	configPath := filepath.Join(runDir, "config.json")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	if err := os.WriteFile(noticesPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("create notices file: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("create config file: %v", err)
+	}
+
+	scriptPath := newSleeperScript(t)
+	cmd := exec.Command(scriptPath,
+		"-config", configPath+".stale",
+		"-dataRootDirectory", dataDir+"-shadow",
+		"-notices", noticesPath+".old",
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	defer stopTestProcess(t, cmd)
+
+	state := activeState{
+		PID:         cmd.Process.Pid,
+		RunDir:      runDir,
+		DataDir:     dataDir,
+		NoticesPath: noticesPath,
+	}
+	if trackedPIDMatchesState(state) {
+		t.Fatalf("expected tracked pid %d to reject substring-only argv matches", state.PID)
+	}
+}
+
 func TestProcessLivenessTreatsZombieAsExited(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -398,6 +474,25 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return content
+}
+
+func newSleeperScript(t *testing.T) string {
+	t.Helper()
+	scriptPath := filepath.Join(t.TempDir(), "fake-tunnel.sh")
+	content := "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do\n  sleep 1\ndone\n"
+	if err := os.WriteFile(scriptPath, []byte(content), 0o755); err != nil {
+		t.Fatalf("write sleeper script: %v", err)
+	}
+	return scriptPath
+}
+
+func stopTestProcess(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	_ = cmd.Wait()
 }
 
 func findRepoRoot(t *testing.T) string {
