@@ -17,6 +17,7 @@ const (
 	ExitUsage            = 64
 	ExitBinaryNotFound   = 65
 	ExitDownloadFailed   = 66
+	ExitInstanceFailed   = 67
 	ExitValidationFailed = 68
 	ExitLocked           = 69
 	ExitNotRunning       = 70
@@ -91,12 +92,36 @@ func resolveRepoRoot() string {
 		return fromEnv
 	}
 
+	if fromExecutable := resolveRepoRootFromExecutable(); fromExecutable != "" {
+		return fromExecutable
+	}
+
 	wd, err := os.Getwd()
 	if err == nil {
 		return wd
 	}
 
 	return "."
+}
+
+func resolveRepoRootFromExecutable() string {
+	executablePath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+
+	currentDir := filepath.Dir(executablePath)
+	for {
+		if fileExists(filepath.Join(currentDir, "psiphon.config")) && fileExists(filepath.Join(currentDir, "tools", "psiphon-mg", "go.mod")) {
+			return currentDir
+		}
+
+		parentDir := filepath.Dir(currentDir)
+		if parentDir == currentDir {
+			return ""
+		}
+		currentDir = parentDir
+	}
 }
 
 func (a *app) run(args []string) int {
@@ -202,11 +227,11 @@ func (a *app) run(args []string) int {
 
 func (a *app) usage(w io.Writer) {
 	fmt.Fprint(w, `Usage:
-  scripts/psiphon-mg.sh start REGION [options]
-  scripts/psiphon-mg.sh switch REGION [options]
-  scripts/psiphon-mg.sh stop [options]
-  scripts/psiphon-mg.sh status [options]
-  scripts/psiphon-mg.sh current-region [options]
+  psiphon-mg start REGION [options]
+  psiphon-mg switch REGION [options]
+  psiphon-mg stop [options]
+  psiphon-mg status [options]
+  psiphon-mg current-region [options]
 
 Commands:
   start REGION       Start a repo-local Psiphon child for REGION.
