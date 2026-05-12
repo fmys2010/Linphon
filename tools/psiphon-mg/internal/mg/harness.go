@@ -21,20 +21,25 @@ type harnessApp struct {
 }
 
 type harnessOptions struct {
-	BinaryPath          string
-	DownloadIfMissing   bool
-	DownloadURL         string
-	DownloadURLProvided bool
-	BaseConfig          string
-	RuntimeRoot         string
-	RunName             string
-	Count               int
-	RegionsCSV          string
-	HTTPPortBase        int
-	SocksPortBase       int
-	WaitSeconds         int
-	StartupGraceSeconds int
-	KeepRunning         bool
+	BinaryPath            string
+	DownloadIfMissing     bool
+	DownloadURL           string
+	DownloadURLProvided   bool
+	BaseConfig            string
+	RuntimeRoot           string
+	RunName               string
+	Count                 int
+	CountProvided         bool
+	RegionsCSV            string
+	RegionsProvided       bool
+	InstanceSpecsRaw      []string
+	HTTPPortBase          int
+	HTTPPortBaseProvided  bool
+	SocksPortBase         int
+	SocksPortBaseProvided bool
+	WaitSeconds           int
+	StartupGraceSeconds   int
+	KeepRunning           bool
 }
 
 type harnessInstance struct {
@@ -113,6 +118,7 @@ Run options:
   --run-name NAME               Stable run directory name under runtime root.
   --count N                     Number of instances to launch (default: 1).
   --regions CSV                 Comma-separated EgressRegion values.
+  --instance REGION:HTTP:SOCKS  Repeatable explicit mapping; cannot mix with --count/--regions/--http-port-base/--socks-port-base.
   --http-port-base N            First LocalHttpProxyPort (default: 18080).
   --socks-port-base N           First LocalSocksProxyPort (default: 11080).
   --wait-seconds N              Seconds to wait before final metrics (default: 5).
@@ -250,6 +256,7 @@ func (a *harnessApp) commandRun(args []string) int {
 				a.err("--count requires a value")
 				return ExitUsage
 			}
+			opt.CountProvided = true
 			value, err := strconv.Atoi(args[i+1])
 			if err != nil || value <= 0 {
 				a.err("instance count must be greater than zero: %s", args[i+1])
@@ -262,13 +269,22 @@ func (a *harnessApp) commandRun(args []string) int {
 				a.err("--regions requires a value")
 				return ExitUsage
 			}
+			opt.RegionsProvided = true
 			opt.RegionsCSV = args[i+1]
+			i++
+		case "--instance":
+			if i+1 >= len(args) {
+				a.err("--instance requires a value")
+				return ExitUsage
+			}
+			opt.InstanceSpecsRaw = append(opt.InstanceSpecsRaw, args[i+1])
 			i++
 		case "--http-port-base":
 			if i+1 >= len(args) {
 				a.err("--http-port-base requires a value")
 				return ExitUsage
 			}
+			opt.HTTPPortBaseProvided = true
 			value, err := strconv.Atoi(args[i+1])
 			if err != nil || value <= 0 {
 				a.err("HTTP port base must be greater than zero: %s", args[i+1])
@@ -281,6 +297,7 @@ func (a *harnessApp) commandRun(args []string) int {
 				a.err("--socks-port-base requires a value")
 				return ExitUsage
 			}
+			opt.SocksPortBaseProvided = true
 			value, err := strconv.Atoi(args[i+1])
 			if err != nil || value <= 0 {
 				a.err("SOCKS port base must be greater than zero: %s", args[i+1])
@@ -333,6 +350,13 @@ func (a *harnessApp) commandRun(args []string) int {
 		return ExitDownloadFailed
 	}
 
+	specs, specErr := buildHarnessInstanceSpecs(a.repoRoot, opt)
+	if specErr != nil {
+		a.err(specErr.Error())
+		return ExitUsage
+	}
+	instanceCount := len(specs)
+
 	binaryPath, ok := resolveBinary(a.repoRoot, opt.BinaryPath, opt.RuntimeRoot)
 	if !ok {
 		a.err("unable to locate psiphon-tunnel-core-x86_64")
@@ -346,7 +370,7 @@ func (a *harnessApp) commandRun(args []string) int {
 
 	runName := opt.RunName
 	if runName == "" {
-		runName = fmt.Sprintf("run-%s-%di", time.Now().Format("20060102-150405"), opt.Count)
+		runName = fmt.Sprintf("run-%s-%di", time.Now().Format("20060102-150405"), instanceCount)
 	}
 
 	runDir := filepath.Join(opt.RuntimeRoot, "runs", runName)
@@ -355,11 +379,7 @@ func (a *harnessApp) commandRun(args []string) int {
 		return ExitValidationFailed
 	}
 
-	regions, regionErr := buildHarnessRegionList(a.repoRoot, opt.Count, opt.RegionsCSV)
-	if regionErr != nil {
-		a.err(regionErr.Error())
-		return ExitUsage
-	}
+	regions := harnessRegions(specs)
 
 	instancesDir := filepath.Join(runDir, "instances")
 	summaryPath := filepath.Join(runDir, "summary.tsv")
@@ -387,7 +407,7 @@ func (a *harnessApp) commandRun(args []string) int {
 		"CGROUP_FINAL_PATH=" + cgroupFinalPath,
 		"BINARY_PATH=" + binaryPath,
 		"BASE_CONFIG=" + opt.BaseConfig,
-		"INSTANCE_COUNT=" + strconv.Itoa(opt.Count),
+		"INSTANCE_COUNT=" + strconv.Itoa(instanceCount),
 		"REGIONS=" + strings.Join(regions, ","),
 	}, "\n") + "\n"
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
@@ -399,15 +419,15 @@ func (a *harnessApp) commandRun(args []string) int {
 		return ExitValidationFailed
 	}
 
-	a.log("starting %d instance(s) using %s", opt.Count, binaryPath)
+	a.log("starting %d instance(s) using %s", instanceCount, binaryPath)
 	a.log("artifacts will be written to %s", runDir)
 
-	instances := make([]harnessInstance, 0, opt.Count)
+	instances := make([]harnessInstance, 0, instanceCount)
 	defer func() {
 		cleanupHarnessProcesses(opt.KeepRunning, instances)
 	}()
 
-	for index := 0; index < opt.Count; index++ {
+	for index, spec := range specs {
 		instanceID := fmt.Sprintf("instance-%03d", index+1)
 		instanceDir := filepath.Join(instancesDir, instanceID)
 		dataDir := filepath.Join(instanceDir, "data")
@@ -416,10 +436,10 @@ func (a *harnessApp) commandRun(args []string) int {
 		stdoutPath := filepath.Join(instanceDir, "stdout.log")
 		stderrPath := filepath.Join(instanceDir, "stderr.log")
 		pidPath := filepath.Join(instanceDir, "pid")
-		httpPort := opt.HTTPPortBase + index
-		socksPort := opt.SocksPortBase + index
+		httpPort := spec.HTTPPort
+		socksPort := spec.SocksPort
 		remoteFilename := "remote_server_list_" + instanceID
-		region := regions[index]
+		region := spec.Region
 
 		if err := os.MkdirAll(dataDir, 0o755); err != nil {
 			a.err("failed to create instance directory: %v", err)
@@ -543,12 +563,12 @@ func (a *harnessApp) commandRun(args []string) int {
 	a.log("metrics: %s", metricsFinalPath)
 	a.log("cgroup snapshots: %s %s", cgroupStartPath, cgroupFinalPath)
 
-	if aliveCount != opt.Count {
-		a.err("%d of %d instance(s) remained alive through startup", aliveCount, opt.Count)
+	if aliveCount != instanceCount {
+		a.err("%d of %d instance(s) remained alive through startup", aliveCount, instanceCount)
 		return ExitInstanceFailed
 	}
 
-	a.log("all %d instance(s) remained alive through startup", opt.Count)
+	a.log("all %d instance(s) remained alive through startup", instanceCount)
 	a.log("network/tunnel success is reported separately via notices and is not required for harness success")
 	return 0
 }

@@ -60,13 +60,13 @@ func TestHarnessDownloadCommandsRemainDisabled(t *testing.T) {
 		}
 	})
 
-		t.Run("run-download-url", func(t *testing.T) {
-			stdout := &bytes.Buffer{}
-			stderr := &bytes.Buffer{}
-			code := RunMultiInstance([]string{"run", "--binary", filepath.Join(repoRoot, "missing-binary"), "--download-url", "https://example.invalid/core", "--base-config", filepath.Join(repoRoot, "psiphon.config")}, stdout, stderr)
-			if code != ExitDownloadFailed {
-				t.Fatalf("expected ExitDownloadFailed=%d, got %d", ExitDownloadFailed, code)
-			}
+	t.Run("run-download-url", func(t *testing.T) {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		code := RunMultiInstance([]string{"run", "--binary", filepath.Join(repoRoot, "missing-binary"), "--download-url", "https://example.invalid/core", "--base-config", filepath.Join(repoRoot, "psiphon.config")}, stdout, stderr)
+		if code != ExitDownloadFailed {
+			t.Fatalf("expected ExitDownloadFailed=%d, got %d", ExitDownloadFailed, code)
+		}
 		if !strings.Contains(stderr.String(), "disabled until executable authenticity verification exists") {
 			t.Fatalf("missing disabled download error: %s", stderr.String())
 		}
@@ -167,6 +167,74 @@ func TestHarnessRunWithFakeBinaryPreservesShellArtifacts(t *testing.T) {
 	assertConfigRegion(t, filepath.Join(runDir, "instances", "instance-003", "config.json"), "BG")
 }
 
+func TestHarnessRunWithExplicitInstancesPreservesMapping(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	t.Setenv("PSIPHON_MG_REPO_ROOT", repoRoot)
+	fakeBinary := buildFakeTunnelBinary(t, repoRoot)
+	runtimeRoot := filepath.Join(t.TempDir(), "explicit")
+	baseConfig := filepath.Join(repoRoot, "psiphon.config")
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	code := RunMultiInstance([]string{
+		"run",
+		"--binary", fakeBinary,
+		"--base-config", baseConfig,
+		"--runtime-root", runtimeRoot,
+		"--run-name", "explicit-2",
+		"--instance", "US:19080:12080",
+		"--instance", "JP:19081:12081",
+		"--wait-seconds", "1",
+		"--startup-grace-seconds", "1",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("run failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	runDir := filepath.Join(runtimeRoot, "runs", "explicit-2")
+	summaryRows := readTSV(t, filepath.Join(runDir, "summary.tsv"))
+	if len(summaryRows) != 3 {
+		t.Fatalf("expected 3 summary lines, got %d", len(summaryRows))
+	}
+	if got := strings.Join([]string{summaryRows[1][2], summaryRows[2][2]}, ","); got != "US,JP" {
+		t.Fatalf("unexpected explicit region order: %s", got)
+	}
+	if summaryRows[1][3] != "19080" || summaryRows[1][4] != "12080" {
+		t.Fatalf("unexpected first instance ports: %v", summaryRows[1])
+	}
+	if summaryRows[2][3] != "19081" || summaryRows[2][4] != "12081" {
+		t.Fatalf("unexpected second instance ports: %v", summaryRows[2])
+	}
+	if !strings.Contains(string(mustReadFile(t, filepath.Join(runDir, "run.env"))), "REGIONS=US,JP") {
+		t.Fatalf("expected run.env to record explicit regions")
+	}
+
+	assertConfigRegion(t, filepath.Join(runDir, "instances", "instance-001", "config.json"), "US")
+	assertConfigRegion(t, filepath.Join(runDir, "instances", "instance-002", "config.json"), "JP")
+	assertConfigPorts(t, filepath.Join(runDir, "instances", "instance-001", "config.json"), 19080, 12080)
+	assertConfigPorts(t, filepath.Join(runDir, "instances", "instance-002", "config.json"), 19081, 12081)
+}
+
+func TestHarnessRunRejectsMixedExplicitAndLegacyModes(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	t.Setenv("PSIPHON_MG_REPO_ROOT", repoRoot)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	code := RunMultiInstance([]string{
+		"run",
+		"--base-config", filepath.Join(repoRoot, "psiphon.config"),
+		"--instance", "US:19080:12080",
+		"--count", "2",
+	}, stdout, stderr)
+	if code != ExitUsage {
+		t.Fatalf("expected ExitUsage=%d, got %d", ExitUsage, code)
+	}
+	if !strings.Contains(stderr.String(), "--instance cannot be combined") {
+		t.Fatalf("missing mixed-mode error: %s", stderr.String())
+	}
+}
+
 func requireFile(t *testing.T, path string) {
 	t.Helper()
 	info, err := os.Stat(path)
@@ -217,5 +285,18 @@ func assertConfigRegion(t *testing.T, path, wantRegion string) {
 	parsed := readConfigJSON(t, path)
 	if got, _ := parsed["EgressRegion"].(string); got != wantRegion {
 		t.Fatalf("unexpected EgressRegion in %s: got=%s want=%s", path, got, wantRegion)
+	}
+}
+
+func assertConfigPorts(t *testing.T, path string, wantHTTP, wantSocks int) {
+	t.Helper()
+	parsed := readConfigJSON(t, path)
+	httpPort, ok := parsed["LocalHttpProxyPort"].(float64)
+	if !ok || int(httpPort) != wantHTTP {
+		t.Fatalf("unexpected LocalHttpProxyPort in %s: got=%v want=%d", path, parsed["LocalHttpProxyPort"], wantHTTP)
+	}
+	socksPort, ok := parsed["LocalSocksProxyPort"].(float64)
+	if !ok || int(socksPort) != wantSocks {
+		t.Fatalf("unexpected LocalSocksProxyPort in %s: got=%v want=%d", path, parsed["LocalSocksProxyPort"], wantSocks)
 	}
 }
