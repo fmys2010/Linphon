@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -132,8 +133,7 @@ func TestTrackedPIDMatchesStateMatchesExactManagerArgs(t *testing.T) {
 		t.Fatalf("create config file: %v", err)
 	}
 
-	scriptPath := newSleeperScript(t)
-	cmd := exec.Command(scriptPath,
+	cmd := newProcessHelperCommand("sleep",
 		"-config", configPath,
 		"-dataRootDirectory", dataDir,
 		"-notices", noticesPath,
@@ -170,8 +170,7 @@ func TestTrackedPIDMatchesStateRejectsSubstringOnlyArgvMatch(t *testing.T) {
 		t.Fatalf("create config file: %v", err)
 	}
 
-	scriptPath := newSleeperScript(t)
-	cmd := exec.Command(scriptPath,
+	cmd := newProcessHelperCommand("sleep",
 		"-config", configPath+".stale",
 		"-dataRootDirectory", dataDir+"-shadow",
 		"-notices", noticesPath+".old",
@@ -194,7 +193,7 @@ func TestTrackedPIDMatchesStateRejectsSubstringOnlyArgvMatch(t *testing.T) {
 }
 
 func TestProcessLivenessTreatsZombieAsExited(t *testing.T) {
-	cmd := exec.Command("sh", "-c", "exit 0")
+	cmd := newProcessHelperCommand("exit-immediately")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start short-lived process: %v", err)
@@ -243,7 +242,7 @@ func TestRunLifecycleWithFakeBinary(t *testing.T) {
 
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	baseConfig := filepath.Join(repoRoot, "psiphon.config")
-	fakeBinary := filepath.Join(repoRoot, "tests", "fake-psiphon-tunnel-core-x86_64")
+	fakeBinary := buildFakeTunnelBinary(t, repoRoot)
 
 	if code, out, errOut := runCommand([]string{"status", "--runtime-root", runtimeRoot}); code != 0 {
 		t.Fatalf("status failed: code=%d stdout=%s stderr=%s", code, out, errOut)
@@ -321,7 +320,7 @@ func TestStopKillsHelperChildInProcessGroup(t *testing.T) {
 
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	baseConfig := filepath.Join(repoRoot, "psiphon.config")
-	fakeBinary := filepath.Join(repoRoot, "tests", "fake-psiphon-tunnel-core-x86_64")
+	fakeBinary := buildFakeTunnelBinary(t, repoRoot)
 	helperPIDFile := filepath.Join(runtimeRoot, "helper.pid")
 
 	t.Setenv("FAKE_PSIPHON_HELPER_IGNORE_TERM", "1")
@@ -371,7 +370,7 @@ func TestStopKillsSurvivingProcessGroupFromStaleState(t *testing.T) {
 
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
 	baseConfig := filepath.Join(repoRoot, "psiphon.config")
-	fakeBinary := filepath.Join(repoRoot, "tests", "fake-psiphon-tunnel-core-x86_64")
+	fakeBinary := buildFakeTunnelBinary(t, repoRoot)
 	helperPIDFile := filepath.Join(runtimeRoot, "helper.pid")
 
 	t.Setenv("FAKE_PSIPHON_HELPER_IGNORE_TERM", "1")
@@ -476,14 +475,28 @@ func mustReadFile(t *testing.T, path string) []byte {
 	return content
 }
 
-func newSleeperScript(t *testing.T) string {
-	t.Helper()
-	scriptPath := filepath.Join(t.TempDir(), "fake-tunnel.sh")
-	content := "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do\n  sleep 1\ndone\n"
-	if err := os.WriteFile(scriptPath, []byte(content), 0o755); err != nil {
-		t.Fatalf("write sleeper script: %v", err)
+func TestManagerProcessHelper(t *testing.T) {
+	if os.Getenv("PSIPHON_MG_TEST_HELPER_PROCESS") != "1" {
+		return
 	}
-	return scriptPath
+
+	args := helperProcessArgs()
+	if len(args) == 0 {
+		os.Exit(2)
+	}
+
+	switch args[0] {
+	case "sleep":
+		signals := make(chan os.Signal, 2)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		for range signals {
+			os.Exit(0)
+		}
+	case "exit-immediately":
+		os.Exit(0)
+	default:
+		os.Exit(2)
+	}
 }
 
 func stopTestProcess(t *testing.T, cmd *exec.Cmd) {
@@ -495,6 +508,35 @@ func stopTestProcess(t *testing.T, cmd *exec.Cmd) {
 	_ = cmd.Wait()
 }
 
+func newProcessHelperCommand(mode string, extraArgs ...string) *exec.Cmd {
+	args := []string{"-test.run=TestManagerProcessHelper", "--", mode}
+	args = append(args, extraArgs...)
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Env = append(os.Environ(), "PSIPHON_MG_TEST_HELPER_PROCESS=1")
+	return cmd
+}
+
+func helperProcessArgs() []string {
+	for index, arg := range os.Args {
+		if arg == "--" {
+			return os.Args[index+1:]
+		}
+	}
+	return nil
+}
+
+func buildFakeTunnelBinary(t *testing.T, repoRoot string) string {
+	t.Helper()
+	binaryPath := filepath.Join(t.TempDir(), "fake-psiphon-tunnel-core-x86_64")
+	cmd := exec.Command("go", "build", "-o", binaryPath, "./internal/testhelper/fakepsiphontunnelcore")
+	cmd.Dir = filepath.Join(repoRoot, "tools", "psiphon-mg")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build fake tunnel binary: %v\n%s", err, output)
+	}
+	return binaryPath
+}
+
 func findRepoRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()
@@ -504,7 +546,7 @@ func findRepoRoot(t *testing.T) string {
 
 	current := wd
 	for range 8 {
-		if fileExists(filepath.Join(current, "psiphon.config")) && fileExists(filepath.Join(current, "tests", "fake-psiphon-tunnel-core-x86_64")) {
+		if fileExists(filepath.Join(current, "psiphon.config")) && fileExists(filepath.Join(current, "tools", "psiphon-mg", "go.mod")) {
 			return current
 		}
 		parent := filepath.Dir(current)
