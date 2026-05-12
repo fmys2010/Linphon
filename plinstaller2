@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-EXIT_DOWNLOAD_DISABLED=66
-
-printf '%s\n' 'Automatic remote download/install is disabled until executable authenticity verification exists.' >&2
-printf '%s\n' 'Use a reviewed local artifact flow instead: place the binary/config locally and install them manually, or use scripts/psiphon-mg.sh with an explicit --binary path.' >&2
-exit "$EXIT_DOWNLOAD_DISABLED"

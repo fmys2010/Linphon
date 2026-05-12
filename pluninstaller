@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-installed_config_dir=/etc/psiphon
-installed_launcher=/usr/bin/psiphon
-
-rm -rf -- "$installed_config_dir"
-rm -f -- "$installed_launcher"
