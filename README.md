@@ -49,6 +49,17 @@ tools/psiphon-mg/bin/psiphon-multi-instance run \
   --count 3
 ```
 
+也可以显式绑定地区和端口：
+
+```
+tools/psiphon-mg/bin/psiphon-multi-instance run \
+  --binary ./archive/psiphon-tunnel-core-x86_64 \
+  --instance US:19080:12080 \
+  --instance JP:19081:12081
+```
+
+`--instance` 模式不能和 `--count`、`--regions`、`--http-port-base`、`--socks-port-base` 混用。
+
 ### 5）运行 staged 回归
 
 ```
