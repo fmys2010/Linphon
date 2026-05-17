@@ -37,8 +37,10 @@ bash ./uninstall.sh
 bash ./uninstall.sh --purge
 ```
 
-- `install.sh` 会本地构建 `linph`；在交互终端且未传参时会先问是否安装，再问单端口还是多端口，然后收集端口/地区并执行 `linph install`
-- 显式传入 install 参数，或在非交互环境调用时，`install.sh` 会保持原有参数透传行为
+- `install.sh` 会本地构建 `linph`；在交互终端且未传参时会先问 `english/中文`，再问是否安装、单端口/多端口、端口与地区，并在执行前预览**最终推导后的每槽端口**
+- 交互安装会按 VPS 有效内存自动计算默认槽位上限：`floor(totalMiB / 100)`，等价于“50%% 内存 / 50 MiB 每隧道”；会优先使用 cgroup 限制，其次才是宿主机总内存
+- `bash ./install.sh --fk`、`linph install --fk`、`plinstaller2 --fk` 会忽略这个内存上限，但绝对硬上限仍然是 `28` 个槽位
+- 交互安装会在确认前预警未托管安装目标、旧 `psiphon.service` 冲突和端口越界；显式传入 install 参数，或在非交互环境调用时，`install.sh` 会保持原有参数透传行为
 - `uninstall.sh` 会优先调用已安装的 `linph uninstall`
 - 默认卸载会保留 `/etc/psiphon/psiphon.config`
 - `--purge` 会删除整个 `/etc/psiphon`
@@ -65,6 +67,7 @@ linph switch-ctry US,CA,JP
 - `log`：跟随已安装日志，直到 Ctrl-C
 - `switch-port`：更新起始端口并在运行时重启应用
 - `switch-ctry`：更新地区并在运行时重启应用
+- 如果安装阶段最后一步只是**首轮自动启动失败**，文件和 profile 仍可能已经写入；这时先看 `linph log`，再执行 `linph start`
 
 ### 4）启动单地区 manager
 
@@ -159,7 +162,7 @@ tools/psiphon-mg/bin/linph mg status \
 当前推荐的全局入口是 `linph`，兼容入口 `psiphon`、`pluninstaller`、`plinstaller2` 都会路由到同一套 Go 逻辑。
 
 - `linph run` / `psiphon`：执行已安装的 `/etc/psiphon/psiphon-tunnel-core-x86_64 -config /etc/psiphon/psiphon.config`
-- `linph install` / `plinstaller2`：从**本地人工审核制品**安装 `linph`、兼容别名、tunnel-core 和配置，并持久化/启动已安装多槽 profile
+- `linph install` / `plinstaller2`：从**本地人工审核制品**安装 `linph`、兼容别名、tunnel-core 和配置，并持久化/启动已安装多槽 profile；默认槽位数还会受到主机有效内存上限约束
 - `linph uninstall` / `pluninstaller`：卸载 `linph` 和兼容别名；默认保留配置，`--purge` 删除整个配置目录
 
 默认安装位置：
@@ -168,6 +171,13 @@ tools/psiphon-mg/bin/linph mg status \
 - `psiphon` / `plinstaller2` / `pluninstaller` -> `/usr/local/bin/*`
 - `archive/psiphon-tunnel-core-x86_64` -> `/etc/psiphon/psiphon-tunnel-core-x86_64`
 - `psiphon.config` -> `/etc/psiphon/psiphon.config`
+
+安装槽位上限规则：
+
+- 默认上限 = `floor(totalMiB / 100)`，等价于“取有效内存的 50%%，再按每槽 50 MiB 预算折算”
+- “有效内存”优先取 cgroup limit，取不到时再回退到宿主机总内存
+- 默认至少允许 `1` 槽，绝对最多允许 `28` 槽
+- 需要临时忽略内存上限时，可显式传 `--fk`
 
 安装完成后可直接运行：
 
