@@ -56,6 +56,16 @@ func TestBuildHarnessInstanceSpecsRejectsMalformedExplicitValue(t *testing.T) {
 	}
 }
 
+func TestBuildHarnessInstanceSpecsRejectsExplicitPortAboveRange(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	_, err := buildHarnessInstanceSpecs(repoRoot, harnessOptions{
+		InstanceSpecsRaw: []string{"AT:70000:12080"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "between 1 and 65535") {
+		t.Fatalf("expected out-of-range port error, got %v", err)
+	}
+}
+
 func TestBuildHarnessInstanceSpecsRejectsLegacyPortOverlap(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 	_, err := buildHarnessInstanceSpecs(repoRoot, harnessOptions{
@@ -65,5 +75,17 @@ func TestBuildHarnessInstanceSpecsRejectsLegacyPortOverlap(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "overlaps") {
 		t.Fatalf("expected overlap error, got %v", err)
+	}
+}
+
+func TestBuildHarnessInstanceSpecsRejectsLegacyPortAboveRange(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	_, err := buildHarnessInstanceSpecs(repoRoot, harnessOptions{
+		Count:         2,
+		HTTPPortBase:  65535,
+		SocksPortBase: 12080,
+	})
+	if err == nil || !strings.Contains(err.Error(), "between 1 and 65535") {
+		t.Fatalf("expected out-of-range legacy port error, got %v", err)
 	}
 }

@@ -180,6 +180,196 @@ func TestRunInstallRejectsUnmanagedExistingFile(t *testing.T) {
 	}
 }
 
+func TestRunInstallRejectsUnknownInstalledRegion(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+		"--installed-slot-count", "2",
+		"--installed-http-port", "18080",
+		"--installed-socks-port", "10880",
+		"--installed-regions", "US,ZZ",
+	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != ExitUsage {
+		t.Fatalf("runInstall() exit = %d, want %d (stderr=%s)", exitCode, ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown region code: ZZ") {
+		t.Fatalf("runInstall() stderr = %q, want unknown region guidance", stderr.String())
+	}
+}
+
+func TestRunInstallRejectsNonRegularBaseConfig(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfigDir := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.MkdirAll(baseConfigDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", baseConfigDir, err)
+	}
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfigDir,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != ExitUsage {
+		t.Fatalf("runInstall() exit = %d, want %d (stderr=%s)", exitCode, ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "base config must be a regular file") {
+		t.Fatalf("runInstall() stderr = %q, want regular-file guidance", stderr.String())
+	}
+}
+
+func TestRunInstallRejectsSymlinkedBinary(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	realBinary := buildFakeTunnelBinary(t, repoRoot)
+	symlinkBinary := filepath.Join(fixtureRoot, "psiphon-tunnel-core-x86_64")
+	if err := os.Symlink(realBinary, symlinkBinary); err != nil {
+		t.Fatalf("Symlink(%q, %q): %v", realBinary, symlinkBinary, err)
+	}
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", symlinkBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != ExitUsage {
+		t.Fatalf("runInstall() exit = %d, want %d (stderr=%s)", exitCode, ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "binary must be a regular file and not a symlink") {
+		t.Fatalf("runInstall() stderr = %q, want symlink guidance", stderr.String())
+	}
+}
+
+func TestRunInstallRejectsSymlinkedBaseConfig(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	realConfig := filepath.Join(fixtureRoot, "real-psiphon.config")
+	if err := os.WriteFile(realConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", realConfig, err)
+	}
+	symlinkConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.Symlink(realConfig, symlinkConfig); err != nil {
+		t.Fatalf("Symlink(%q, %q): %v", realConfig, symlinkConfig, err)
+	}
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", symlinkConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != ExitUsage {
+		t.Fatalf("runInstall() exit = %d, want %d (stderr=%s)", exitCode, ExitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "base config must be a regular file and not a symlink") {
+		t.Fatalf("runInstall() stderr = %q, want symlink guidance", stderr.String())
+	}
+}
+
+func TestRunInstallPreservesSourceBinaryPermissions(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	if err := os.Chmod(sourceBinary, 0o644); err != nil {
+		t.Fatalf("Chmod(%q): %v", sourceBinary, err)
+	}
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	t.Setenv("FAKE_PSIPHON_AUTO_EXIT_DELAY_MS", "1500")
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("runInstall() exit = %d, stderr = %s", exitCode, stderr.String())
+	}
+	info, err := os.Stat(sourceBinary)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", sourceBinary, err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("source binary mode = %o, want 644", got)
+	}
+}
+
 func installFixture(t *testing.T) (binDir, configDir string, layout installLayout) {
 	t.Helper()
 
@@ -228,6 +418,9 @@ func overrideInstallGlobals(t *testing.T) func() {
 	origPluninstallerPath := installedPluninstallerPath
 	origLegacyPsiphonPath := legacyInstalledPsiphonPath
 	origCurrentExecutablePath := currentExecutablePath
+	origInstalledProcMeminfoPath := installedProcMeminfoPath
+	origInstalledCgroupLimitPaths := append([]string(nil), installedCgroupLimitPaths...)
+	origInstalledReadFile := installedReadFile
 
 	return func() {
 		installedPsiphonConfigDir = origConfigDir
@@ -239,6 +432,9 @@ func overrideInstallGlobals(t *testing.T) func() {
 		installedPluninstallerPath = origPluninstallerPath
 		legacyInstalledPsiphonPath = origLegacyPsiphonPath
 		currentExecutablePath = origCurrentExecutablePath
+		installedProcMeminfoPath = origInstalledProcMeminfoPath
+		installedCgroupLimitPaths = append([]string(nil), origInstalledCgroupLimitPaths...)
+		installedReadFile = origInstalledReadFile
 	}
 }
 

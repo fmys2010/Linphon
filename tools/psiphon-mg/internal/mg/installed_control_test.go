@@ -50,6 +50,12 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 	if err := os.WriteFile(baseConfig, []byte("{\n  \"LocalHttpProxyPort\": 8081,\n  \"LocalSocksProxyPort\": 1081,\n  \"EgressRegion\": \"US\"\n}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
 	}
+	meminfoPath := filepath.Join(fixtureRoot, "meminfo")
+	if err := os.WriteFile(meminfoPath, []byte("MemTotal:         262144 kB\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", meminfoPath, err)
+	}
+	installedProcMeminfoPath = meminfoPath
+	installedCgroupLimitPaths = nil
 	currentExecutablePath = func() (string, error) { return sourceLinph, nil }
 
 	var installStdout bytes.Buffer
@@ -57,6 +63,7 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 	installArgs := []string{
 		"--binary", sourceBinary,
 		"--base-config", baseConfig,
+		"--fk",
 		"--install-bin-dir", binDir,
 		"--install-config-dir", configDir,
 		"--installed-slot-count", "3",
@@ -217,5 +224,21 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 
 	if !strings.Contains(installStdout.String(), "slot-001 region=US http=18080 socks=18081") {
 		t.Fatalf("install stdout missing configured port pairs: %s", installStdout.String())
+	}
+}
+
+func TestInstalledProfileAndSpecsRejectsUnknownRegion(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	layout := buildInstallLayout(filepath.Join(t.TempDir(), "bin"), filepath.Join(t.TempDir(), "etc", "psiphon"))
+	a := &app{repoRoot: repoRoot}
+
+	_, _, err := a.installedProfileAndSpecsFromProfile(layout, installedProfile{
+		SlotCount:     1,
+		HTTPPortBase:  18080,
+		SocksPortBase: 10880,
+		Regions:       []string{"ZZ"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown region code: ZZ") {
+		t.Fatalf("expected unknown region error, got %v", err)
 	}
 }
