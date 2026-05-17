@@ -7,5 +7,5 @@ import (
 )
 
 func main() {
-	os.Exit(mg.RunPluninstaller(os.Stdout, os.Stderr))
+	os.Exit(mg.RunLinphAlias("pluninstaller", os.Args[1:], os.Stdout, os.Stderr))
 }

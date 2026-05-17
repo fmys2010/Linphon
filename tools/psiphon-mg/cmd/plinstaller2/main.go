@@ -7,5 +7,5 @@ import (
 )
 
 func main() {
-	os.Exit(mg.RunPlinstaller2(os.Stdout, os.Stderr))
+	os.Exit(mg.RunLinphAlias("plinstaller2", os.Args[1:], os.Stdout, os.Stderr))
 }

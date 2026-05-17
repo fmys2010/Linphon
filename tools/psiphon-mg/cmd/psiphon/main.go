@@ -7,5 +7,5 @@ import (
 )
 
 func main() {
-	os.Exit(mg.RunPsiphon(os.Stdout, os.Stderr))
+	os.Exit(mg.RunLinphAlias("psiphon", os.Args[1:], os.Stdout, os.Stderr))
 }
