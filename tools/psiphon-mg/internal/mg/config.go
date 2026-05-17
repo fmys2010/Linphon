@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func readDefaultPorts(configPath string) (int, int) {
@@ -20,6 +21,26 @@ func readDefaultPorts(configPath string) (int, int) {
 	return httpPort, socksPort
 }
 
+func readDefaultRegion(repoRoot, configPath string) string {
+	content, err := os.ReadFile(configPath)
+	if err == nil {
+		var raw map[string]any
+		if jsonErr := json.Unmarshal(content, &raw); jsonErr == nil {
+			if region := strings.TrimSpace(stringFromAny(raw["EgressRegion"])); region != "" {
+				return region
+			}
+		}
+	}
+
+	for _, region := range strings.Split(defaultRegionsCSV(repoRoot), ",") {
+		if trimmed := strings.TrimSpace(region); trimmed != "" {
+			return trimmed
+		}
+	}
+
+	return "US"
+}
+
 func intFromAny(value any, fallback int) int {
 	switch typed := value.(type) {
 	case float64:
@@ -32,6 +53,15 @@ func intFromAny(value any, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func stringFromAny(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return ""
+	}
 }
 
 func resolveBinary(repoRoot, explicitBinary, runtimeRoot string) (string, bool) {

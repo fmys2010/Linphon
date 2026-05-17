@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 )
 
 const helperChildModeEnv = "FAKE_PSIPHON_CHILD_MODE"
@@ -43,6 +45,13 @@ func run() int {
 		usage(os.Stdout)
 		return 0
 	}
+	if args.dataRoot == "" || args.noticesPath == "" {
+		if _, err := readConfig(args.configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read config: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 
 	if err := os.MkdirAll(args.dataRoot, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create data root: %v\n", err)
@@ -58,7 +67,6 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "failed to read config: %v\n", err)
 		return 1
 	}
-
 	remoteListPath := filepath.Join(args.dataRoot, config.RemoteFilename)
 	if err := os.WriteFile(remoteListPath, []byte(fmt.Sprintf("fake remote list for %s\n", config.RemoteFilename)), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write remote list: %v\n", err)
@@ -95,6 +103,11 @@ func run() int {
 		return 1
 	}
 
+	if delay := autoExitDelay(); delay >= 0 {
+		time.Sleep(delay)
+		return 0
+	}
+
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	for range signals {
@@ -103,6 +116,21 @@ func run() int {
 	}
 
 	return 0
+}
+
+func autoExitDelay() time.Duration {
+	raw := os.Getenv("FAKE_PSIPHON_AUTO_EXIT_DELAY_MS")
+	if raw == "" {
+		if os.Getenv("FAKE_PSIPHON_AUTO_EXIT") == "1" {
+			return 1500 * time.Millisecond
+		}
+		return -1
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return -1
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func parseArgs(argv []string) (cliArgs, error) {
@@ -137,7 +165,7 @@ func parseArgs(argv []string) (cliArgs, error) {
 	if args.help {
 		return args, nil
 	}
-	if args.configPath == "" || args.dataRoot == "" || args.noticesPath == "" {
+	if args.configPath == "" {
 		return cliArgs{}, fmt.Errorf("missing required flags")
 	}
 	return args, nil
