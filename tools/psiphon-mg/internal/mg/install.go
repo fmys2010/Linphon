@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const installedManifestFilename = "linph-install-manifest.json"
@@ -24,6 +25,7 @@ type installOptions struct {
 	InstalledSocksPort  int
 	InstalledRegionsCSV string
 	InstalledProfileSet bool
+	ForceUnlockSlotCap  bool
 	Force               bool
 }
 
@@ -153,6 +155,8 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 			opt.InstalledRegionsCSV = args[i+1]
 			opt.InstalledProfileSet = true
 			i++
+		case "--fk":
+			opt.ForceUnlockSlotCap = true
 		case "--help", "-h":
 			installUsage(stdout, usageName)
 			return 0
@@ -171,19 +175,33 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 	}
 
 	runtimeRoot := filepath.Join(repoRoot, ".work", "psiphon-harness")
+	if opt.BinaryPath != "" {
+		if err := validateInstallBinarySource(opt.BinaryPath); err != nil {
+			fmt.Fprintln(stderr, err)
+			return ExitUsage
+		}
+	}
 	sourceBinary, ok := resolveBinary(repoRoot, opt.BinaryPath, runtimeRoot)
 	if !ok {
 		fmt.Fprintf(stderr, "unable to locate psiphon-tunnel-core-x86_64\n")
 		return ExitBinaryNotFound
 	}
-	if !fileExists(opt.BaseConfig) {
-		fmt.Fprintf(stderr, "base config not found: %s\n", opt.BaseConfig)
+	if err := validateInstallBinarySource(sourceBinary); err != nil {
+		fmt.Fprintln(stderr, err)
+		return ExitUsage
+	}
+	if err := validateInstallBaseConfigSource(opt.BaseConfig); err != nil {
+		fmt.Fprintln(stderr, err)
 		return ExitUsage
 	}
 
 	installedProfile, err := resolveInstalledProfile(repoRoot, opt)
 	if err != nil {
 		fmt.Fprintf(stderr, "failed to resolve installed profile: %v\n", err)
+		return ExitUsage
+	}
+	if err := validateInstalledSlotCapacity(installedProfile, detectInstalledSlotCapInfo(opt.ForceUnlockSlotCap)); err != nil {
+		fmt.Fprintf(stderr, "failed to validate installed slot count: %v\n", err)
 		return ExitUsage
 	}
 	installedSpecs, err := deriveInstalledSlotSpecs(layout, installedProfile)
@@ -253,6 +271,10 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 		}
 		return installedApp.syncInstalledSlots(layout, installedProfile, installedSpecs, false)
 	}); code != 0 {
+		fmt.Fprintln(stderr, "install artifacts were written, but initial slot startup did not fully succeed")
+		fmt.Fprintln(stderr, "review logs with `linph log` and retry with `linph start`")
+		fmt.Fprintln(stderr, "configured slot ports:")
+		fmt.Fprintln(stderr, installedPortsCSV(installedSpecs))
 		return code
 	}
 
@@ -364,7 +386,8 @@ Options:
   --install-bin-dir PATH      Install bin dir (default: %s).
   --install-config-dir PATH   Install config dir (default: %s).
 	--force                     Overwrite existing unmanaged files.
-	--installed-slot-count N    Number of installed slots (1-5).
+	--fk                        Ignore the memory-based slot cap and unlock up to 28 slots.
+	--installed-slot-count N    Number of installed slots (1-28, further capped by host memory unless --fk).
 	--installed-http-port N     Starting HTTP port for installed slots.
 	--installed-socks-port N    Starting SOCKS port for installed slots.
 	--installed-regions CSV     Comma-separated regions for installed slots.
@@ -522,7 +545,73 @@ func resolveInstalledProfile(repoRoot string, opt installOptions) (installedProf
 	if opt.InstalledSlotCount == 0 || opt.InstalledHTTPPort == 0 || opt.InstalledSocksPort == 0 || strings.TrimSpace(opt.InstalledRegionsCSV) == "" {
 		return installedProfile{}, fmt.Errorf("all installed profile flags must be provided together")
 	}
-	return installedProfileFromCSV(opt.InstalledSlotCount, opt.InstalledHTTPPort, opt.InstalledSocksPort, opt.InstalledRegionsCSV)
+	return installedProfileFromCSV(repoRoot, opt.InstalledSlotCount, opt.InstalledHTTPPort, opt.InstalledSocksPort, opt.InstalledRegionsCSV)
+}
+
+func validateInstallBinarySource(path string) error {
+	if err := validateRegularInstallFile("binary", path); err != nil {
+		return err
+	}
+	if ok, err := looksLikeInstallExecutable(path); err != nil {
+		return fmt.Errorf("failed to inspect binary %s: %w", path, err)
+	} else if !ok {
+		return fmt.Errorf("binary must be an executable file (ELF or shebang script): %s", path)
+	}
+	return nil
+}
+
+func validateInstallBaseConfigSource(path string) error {
+	if err := validateRegularInstallFile("base config", path); err != nil {
+		return err
+	}
+	data, err := readInstallSourceFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read base config %s: %w", path, err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("base config must be a valid JSON object: %w", err)
+	}
+	return nil
+}
+
+func validateRegularInstallFile(label, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s not found: %s", label, path)
+		}
+		return fmt.Errorf("failed to stat %s %s: %w", label, path, err)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%s must be a regular file and not a symlink: %s", label, path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s must be a regular file: %s", label, path)
+	}
+	return nil
+}
+
+func looksLikeInstallExecutable(path string) (bool, error) {
+	file, err := openInstallSourceFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	header := make([]byte, 4)
+	n, err := file.Read(header)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	header = header[:n]
+	if len(header) >= 4 && string(header[:4]) == "\x7fELF" {
+		return true, nil
+	}
+	if len(header) >= 2 && string(header[:2]) == "#!" {
+		return true, nil
+	}
+	return false, nil
 }
 
 func prepareManagedDestination(path string, managedPaths map[string]struct{}, force bool) error {
@@ -551,11 +640,41 @@ func copyFileAtomic(sourcePath, destPath string, mode fs.FileMode) error {
 	if sameCleanPath(sourcePath, destPath) {
 		return nil
 	}
-	data, err := os.ReadFile(sourcePath)
+	sourceFile, err := openInstallSourceFile(sourcePath)
 	if err != nil {
 		return err
 	}
-	return copyBytesAtomic(data, destPath, mode)
+	defer sourceFile.Close()
+	info, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("source must be a regular file: %s", sourcePath)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+	tempFile, err := os.CreateTemp(filepath.Dir(destPath), ".linph-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if _, err := io.Copy(tempFile, sourceFile); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, destPath)
 }
 
 func copyBytesAtomic(data []byte, destPath string, mode fs.FileMode) error {
@@ -582,6 +701,37 @@ func copyBytesAtomic(data []byte, destPath string, mode fs.FileMode) error {
 		return err
 	}
 	return os.Rename(tempPath, destPath)
+}
+
+func openInstallSourceFile(path string) (*os.File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("failed to open %s", path)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("source must be a regular file: %s", path)
+	}
+	return file, nil
+}
+
+func readInstallSourceFile(path string) ([]byte, error) {
+	file, err := openInstallSourceFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(file)
 }
 
 func removePathIfExists(path string) error {

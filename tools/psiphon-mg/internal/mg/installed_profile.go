@@ -13,7 +13,6 @@ const (
 	installedProfileFilename     = "linph-installed-profile.json"
 	installedRuntimeRootName     = "linph-runtime"
 	installedRuntimeSlotsDirName = "slots"
-	installedSlotCountLimit      = 5
 	installedProfileVersion      = 1
 )
 
@@ -84,13 +83,17 @@ func writeInstalledProfile(path string, profile installedProfile) error {
 func installedProfileFromBaseConfig(repoRoot, baseConfigPath string) (installedProfile, error) {
 	httpPort, socksPort := readDefaultPorts(baseConfigPath)
 	region := readDefaultRegion(repoRoot, baseConfigPath)
-	return installedProfile{
+	profile := installedProfile{
 		Version:       installedProfileVersion,
 		SlotCount:     1,
 		HTTPPortBase:  httpPort,
 		SocksPortBase: socksPort,
 		Regions:       []string{region},
-	}, nil
+	}
+	if err := validateInstalledRegions(repoRoot, profile.Regions); err != nil {
+		return installedProfile{}, err
+	}
+	return profile, nil
 }
 
 func normalizeInstalledRegions(raw string) []string {
@@ -106,15 +109,31 @@ func normalizeInstalledRegions(raw string) []string {
 	return regions
 }
 
+func validateInstalledBasePort(label string, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("%s port must be between 1 and 65535: %d", label, port)
+	}
+	return nil
+}
+
+func validateInstalledRegions(repoRoot string, regions []string) error {
+	for _, region := range regions {
+		if !isKnownRegion(repoRoot, region) {
+			return fmt.Errorf("unknown region code: %s", region)
+		}
+	}
+	return nil
+}
+
 func deriveInstalledSlotSpecs(layout installLayout, profile installedProfile) ([]installedSlotSpec, error) {
-	if profile.SlotCount < 1 || profile.SlotCount > installedSlotCountLimit {
-		return nil, fmt.Errorf("slot count must be between 1 and %d", installedSlotCountLimit)
+	if profile.SlotCount < 1 || profile.SlotCount > installedSlotCountHardLimit {
+		return nil, fmt.Errorf("slot count must be between 1 and %d", installedSlotCountHardLimit)
 	}
-	if profile.HTTPPortBase <= 0 {
-		return nil, fmt.Errorf("HTTP port must be greater than zero: %d", profile.HTTPPortBase)
+	if err := validateInstalledBasePort("HTTP", profile.HTTPPortBase); err != nil {
+		return nil, err
 	}
-	if profile.SocksPortBase <= 0 {
-		return nil, fmt.Errorf("SOCKS port must be greater than zero: %d", profile.SocksPortBase)
+	if err := validateInstalledBasePort("SOCKS", profile.SocksPortBase); err != nil {
+		return nil, err
 	}
 	if len(profile.Regions) < profile.SlotCount {
 		return nil, fmt.Errorf("need at least %d region(s) for %d slot(s)", profile.SlotCount, profile.SlotCount)
@@ -200,13 +219,22 @@ func installedSlotStateLabel(index int) string {
 	return "slot-" + strings.TrimLeft(fmt.Sprintf("%03d", index+1), "0")
 }
 
-func installedProfileFromCSV(slotCount, httpPortBase, socksPortBase int, regionsCSV string) (installedProfile, error) {
+func installedProfileFromCSV(repoRoot string, slotCount, httpPortBase, socksPortBase int, regionsCSV string) (installedProfile, error) {
 	regions := normalizeInstalledRegions(regionsCSV)
-	if slotCount < 1 || slotCount > installedSlotCountLimit {
-		return installedProfile{}, fmt.Errorf("slot count must be between 1 and %d", installedSlotCountLimit)
+	if slotCount < 1 || slotCount > installedSlotCountHardLimit {
+		return installedProfile{}, fmt.Errorf("slot count must be between 1 and %d", installedSlotCountHardLimit)
+	}
+	if err := validateInstalledBasePort("HTTP", httpPortBase); err != nil {
+		return installedProfile{}, err
+	}
+	if err := validateInstalledBasePort("SOCKS", socksPortBase); err != nil {
+		return installedProfile{}, err
 	}
 	if len(regions) < slotCount {
 		return installedProfile{}, fmt.Errorf("need at least %d region(s) for %d slot(s)", slotCount, slotCount)
+	}
+	if err := validateInstalledRegions(repoRoot, regions[:slotCount]); err != nil {
+		return installedProfile{}, err
 	}
 	return installedProfile{
 		Version:       installedProfileVersion,
@@ -219,8 +247,8 @@ func installedProfileFromCSV(slotCount, httpPortBase, socksPortBase int, regions
 
 func parseInstalledPort(raw string) (int, error) {
 	port, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || port <= 0 {
-		return 0, fmt.Errorf("port must be greater than zero: %s", raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("port must be between 1 and 65535: %s", raw)
 	}
 	return port, nil
 }
