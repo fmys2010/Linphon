@@ -15,9 +15,10 @@ import (
 )
 
 type harnessApp struct {
-	stdout   io.Writer
-	stderr   io.Writer
-	repoRoot string
+	stdout    io.Writer
+	stderr    io.Writer
+	repoRoot  string
+	usageName string
 }
 
 type harnessOptions struct {
@@ -67,10 +68,19 @@ type metricsSnapshot struct {
 }
 
 func RunMultiInstance(args []string, stdout, stderr io.Writer) int {
+	return RunMultiInstanceNamed(args, "psiphon-multi-instance", stdout, stderr)
+}
+
+func RunMultiInstanceNamed(args []string, usageName string, stdout, stderr io.Writer) int {
+	if strings.TrimSpace(usageName) == "" {
+		usageName = "psiphon-multi-instance"
+	}
+
 	app := &harnessApp{
-		stdout:   stdout,
-		stderr:   stderr,
-		repoRoot: resolveRepoRoot(),
+		stdout:    stdout,
+		stderr:    stderr,
+		repoRoot:  resolveRepoRoot(),
+		usageName: usageName,
 	}
 	return app.run(args)
 }
@@ -99,10 +109,10 @@ func (a *harnessApp) run(args []string) int {
 }
 
 func (a *harnessApp) usage(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  psiphon-multi-instance locate-binary [--binary PATH] [--runtime-root PATH]
-  psiphon-multi-instance download-binary [--output PATH] [--url URL]
-  psiphon-multi-instance run [options]
+	fmt.Fprintf(w, `Usage:
+  %s locate-binary [--binary PATH] [--runtime-root PATH]
+  %s download-binary [--output PATH] [--url URL]
+  %s run [options]
 
 Commands:
   locate-binary     Resolve a repo-local psiphon-tunnel-core-x86_64 path.
@@ -136,7 +146,7 @@ Artifacts:
       metrics-final.tsv
       cgroup-start.snapshot
       cgroup-final.snapshot
-`)
+`, a.usageName, a.usageName, a.usageName)
 }
 
 func (a *harnessApp) commandLocateBinary(args []string) int {

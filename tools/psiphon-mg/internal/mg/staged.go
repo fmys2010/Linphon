@@ -9,9 +9,10 @@ import (
 )
 
 type stagedApp struct {
-	stdout   io.Writer
-	stderr   io.Writer
-	repoRoot string
+	stdout    io.Writer
+	stderr    io.Writer
+	repoRoot  string
+	usageName string
 }
 
 type stagedOptions struct {
@@ -27,10 +28,19 @@ type stagedOptions struct {
 }
 
 func RunStaged(args []string, stdout, stderr io.Writer) int {
+	return RunStagedNamed(args, "run-psiphon-staged", stdout, stderr)
+}
+
+func RunStagedNamed(args []string, usageName string, stdout, stderr io.Writer) int {
+	if usageName == "" {
+		usageName = "run-psiphon-staged"
+	}
+
 	app := &stagedApp{
-		stdout:   stdout,
-		stderr:   stderr,
-		repoRoot: resolveRepoRoot(),
+		stdout:    stdout,
+		stderr:    stderr,
+		repoRoot:  resolveRepoRoot(),
+		usageName: usageName,
 	}
 	return app.run(args)
 }
@@ -187,8 +197,8 @@ func (a *stagedApp) run(args []string) int {
 }
 
 func (a *stagedApp) usage(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  run-psiphon-staged [options]
+	fmt.Fprintf(w, `Usage:
+  %s [options]
 
 Options:
   --binary PATH                 Explicit binary path.
@@ -200,7 +210,7 @@ Options:
   --wait-seconds N              Seconds to wait before final metrics per stage.
   --startup-grace-seconds N     Seconds to allow each stage to initialize.
   --help                        Show this message.
-`)
+`, a.usageName)
 }
 
 func (a *stagedApp) log(format string, args ...any) {

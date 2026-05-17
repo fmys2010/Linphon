@@ -63,10 +63,11 @@ type activeState struct {
 }
 
 type app struct {
-	stdout   io.Writer
-	stderr   io.Writer
-	repoRoot string
-	owner    string
+	stdout    io.Writer
+	stderr    io.Writer
+	repoRoot  string
+	owner     string
+	usageName string
 }
 
 type tunnelNotice struct {
@@ -77,11 +78,23 @@ type tunnelNotice struct {
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	return RunNamed(args, os.Args[0], "psiphon-mg", stdout, stderr)
+}
+
+func RunNamed(args []string, owner, usageName string, stdout, stderr io.Writer) int {
+	if strings.TrimSpace(owner) == "" {
+		owner = os.Args[0]
+	}
+	if strings.TrimSpace(usageName) == "" {
+		usageName = "psiphon-mg"
+	}
+
 	app := &app{
-		stdout:   stdout,
-		stderr:   stderr,
-		repoRoot: resolveRepoRoot(),
-		owner:    os.Args[0],
+		stdout:    stdout,
+		stderr:    stderr,
+		repoRoot:  resolveRepoRoot(),
+		owner:     owner,
+		usageName: usageName,
 	}
 
 	return app.run(args)
@@ -226,12 +239,12 @@ func (a *app) run(args []string) int {
 }
 
 func (a *app) usage(w io.Writer) {
-	fmt.Fprint(w, `Usage:
-  psiphon-mg start REGION [options]
-  psiphon-mg switch REGION [options]
-  psiphon-mg stop [options]
-  psiphon-mg status [options]
-  psiphon-mg current-region [options]
+	fmt.Fprintf(w, `Usage:
+  %s start REGION [options]
+  %s switch REGION [options]
+  %s stop [options]
+  %s status [options]
+  %s current-region [options]
 
 Commands:
   start REGION       Start a repo-local Psiphon child for REGION.
@@ -263,7 +276,7 @@ Artifacts:
       stdout.log
       stderr.log
       pid
-`)
+`, a.usageName, a.usageName, a.usageName, a.usageName, a.usageName)
 }
 
 func (a *app) parseOptions(command string, args []string, opt *options) int {
