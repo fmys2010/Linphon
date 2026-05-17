@@ -118,6 +118,68 @@ func TestLoadStateTreatsPidReuseMismatchAsStale(t *testing.T) {
 	}
 }
 
+func TestLoadStateTreatsInvalidNumericFieldsAsStale(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	statePath := stateFilePath(runtimeRoot)
+	content := strings.Join([]string{
+		`ACTIVE_REGION="US"`,
+		`ACTIVE_PID="not-a-number"`,
+		`ACTIVE_HTTP_PORT="8081"`,
+		`ACTIVE_SOCKS_PORT="1081"`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(statePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write invalid state file: %v", err)
+	}
+
+	stderr := &bytes.Buffer{}
+	app := &app{stderr: stderr}
+	loadedState, stateKind := app.loadState(runtimeRoot)
+
+	if stateKind != stateStale {
+		t.Fatalf("expected stale state for invalid numeric fields, got %s", stateKind)
+	}
+	if loadedState.Region != "US" {
+		t.Fatalf("expected region US to remain readable, got %q", loadedState.Region)
+	}
+	if loadedState.PID != 0 {
+		t.Fatalf("expected invalid pid to remain unset, got %d", loadedState.PID)
+	}
+	if !strings.Contains(stderr.String(), "invalid ACTIVE_PID value") {
+		t.Fatalf("expected parse warning in stderr, got: %s", stderr.String())
+	}
+}
+
+func TestPrintStatusConnectivityReflectsState(t *testing.T) {
+	readyNoticesPath := filepath.Join(t.TempDir(), "notices-ready.jsonl")
+	if err := os.WriteFile(readyNoticesPath, []byte(`{"noticeType":"Tunnels","data":{"count":1}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write ready notices: %v", err)
+	}
+
+	tests := []struct {
+		name             string
+		stateKind        managerState
+		state            activeState
+		wantConnectivity string
+	}{
+		{name: "stopped", stateKind: stateNone, wantConnectivity: "stopped"},
+		{name: "stale", stateKind: stateStale, wantConnectivity: "stale"},
+		{name: "running-not-ready", stateKind: stateRunning, state: activeState{}, wantConnectivity: "not-ready"},
+		{name: "running-ready", stateKind: stateRunning, state: activeState{NoticesPath: readyNoticesPath}, wantConnectivity: "ready"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout := &bytes.Buffer{}
+			app := &app{stdout: stdout}
+			app.printStatus("/tmp/runtime", tt.stateKind, tt.state)
+
+			if !strings.Contains(stdout.String(), "connectivity="+tt.wantConnectivity) {
+				t.Fatalf("expected connectivity=%s in status output, got: %s", tt.wantConnectivity, stdout.String())
+			}
+		})
+	}
+}
+
 func TestTrackedPIDMatchesStateMatchesExactManagerArgs(t *testing.T) {
 	runDir := filepath.Join(t.TempDir(), "run-US-test")
 	dataDir := filepath.Join(runDir, "data")
@@ -459,8 +521,8 @@ func runCommand(args []string) (int, string, string) {
 
 func readStatusValue(statusText, key string) string {
 	for _, line := range strings.Split(statusText, "\n") {
-		if strings.HasPrefix(line, key+"=") {
-			return strings.TrimPrefix(line, key+"=")
+		if value, ok := strings.CutPrefix(line, key+"="); ok {
+			return value
 		}
 	}
 	return ""

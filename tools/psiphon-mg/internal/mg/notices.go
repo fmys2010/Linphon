@@ -71,6 +71,22 @@ func formatOptionalInt(value int) string {
 	return strconv.Itoa(value)
 }
 
+func connectivityState(stateKind managerState, tunnelsNotice string) string {
+	switch stateKind {
+	case stateNone:
+		return "stopped"
+	case stateStale:
+		return "stale"
+	case stateRunning:
+		if tunnelsNotice == "yes" {
+			return "ready"
+		}
+		return "not-ready"
+	default:
+		return "unknown"
+	}
+}
+
 func (a *app) printStatus(runtimeRoot string, stateKind managerState, state activeState) {
 	displayState := string(stateKind)
 	if stateKind == stateNone {
@@ -85,6 +101,7 @@ func (a *app) printStatus(runtimeRoot string, stateKind managerState, state acti
 		socksNotice = noticeFlag(state.NoticesPath, "ListeningSocksProxyPort")
 		tunnelsNotice = tunnelsReadyFlag(state.NoticesPath)
 	}
+	connectivity := connectivityState(stateKind, tunnelsNotice)
 
 	fmt.Fprintf(a.stdout, "runtime_root=%s\n", runtimeRoot)
 	fmt.Fprintf(a.stdout, "state=%s\n", displayState)
@@ -104,5 +121,5 @@ func (a *app) printStatus(runtimeRoot string, stateKind managerState, state acti
 	fmt.Fprintf(a.stdout, "run_dir=%s\n", state.RunDir)
 	fmt.Fprintf(a.stdout, "stdout_path=%s\n", state.StdoutPath)
 	fmt.Fprintf(a.stdout, "stderr_path=%s\n", state.StderrPath)
-	fmt.Fprintln(a.stdout, "connectivity=unknown")
+	fmt.Fprintf(a.stdout, "connectivity=%s\n", connectivity)
 }

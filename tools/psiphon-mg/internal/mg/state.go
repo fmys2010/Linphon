@@ -81,6 +81,7 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 	}
 
 	state := activeState{}
+	parseFailed := false
 	scanner := bufio.NewScanner(strings.NewReader(string(content)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -94,11 +95,29 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 		case "ACTIVE_REGION":
 			state.Region = value
 		case "ACTIVE_PID":
-			state.PID, _ = strconv.Atoi(value)
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil {
+				parseFailed = true
+				a.err("invalid ACTIVE_PID value in %s: %q", path, value)
+				continue
+			}
+			state.PID = parsed
 		case "ACTIVE_HTTP_PORT":
-			state.HTTPPort, _ = strconv.Atoi(value)
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil {
+				parseFailed = true
+				a.err("invalid ACTIVE_HTTP_PORT value in %s: %q", path, value)
+				continue
+			}
+			state.HTTPPort = parsed
 		case "ACTIVE_SOCKS_PORT":
-			state.SocksPort, _ = strconv.Atoi(value)
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil {
+				parseFailed = true
+				a.err("invalid ACTIVE_SOCKS_PORT value in %s: %q", path, value)
+				continue
+			}
+			state.SocksPort = parsed
 		case "ACTIVE_BINARY_PATH":
 			state.BinaryPath = value
 		case "ACTIVE_BASE_CONFIG":
@@ -112,7 +131,13 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 		case "ACTIVE_NOTICES_PATH":
 			state.NoticesPath = value
 		case "ACTIVE_READY_TIMEOUT_SECONDS":
-			state.ReadyTimeoutSeconds, _ = strconv.Atoi(value)
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil {
+				parseFailed = true
+				a.err("invalid ACTIVE_READY_TIMEOUT_SECONDS value in %s: %q", path, value)
+				continue
+			}
+			state.ReadyTimeoutSeconds = parsed
 		case "ACTIVE_RUN_DIR":
 			state.RunDir = value
 		case "ACTIVE_STARTED_AT":
@@ -122,6 +147,15 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 		case "ACTIVE_STDOUT_PATH":
 			state.StdoutPath = value
 		}
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		parseFailed = true
+		a.err("failed to scan state file %s: %v", path, scanErr)
+	}
+
+	if parseFailed {
+		return state, stateStale
 	}
 
 	if trackedPIDMatchesState(state) {
