@@ -1,0 +1,631 @@
+package mg
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+const installedManifestFilename = "linph-install-manifest.json"
+
+type installOptions struct {
+	BinaryPath          string
+	BaseConfig          string
+	InstallBinDir       string
+	InstallConfigDir    string
+	InstalledSlotCount  int
+	InstalledHTTPPort   int
+	InstalledSocksPort  int
+	InstalledRegionsCSV string
+	InstalledProfileSet bool
+	Force               bool
+}
+
+type uninstallOptions struct {
+	InstallBinDir       string
+	InstallConfigDir    string
+	InstallBinDirSet    bool
+	InstallConfigDirSet bool
+	Purge               bool
+}
+
+type installLayout struct {
+	BinDir            string
+	ConfigDir         string
+	LinphPath         string
+	CompatPaths       []string
+	PsiphonBinaryPath string
+	PsiphonConfigPath string
+	ManifestPath      string
+}
+
+type installManifest struct {
+	Version           int      `json:"version"`
+	BinDir            string   `json:"bin_dir"`
+	ConfigDir         string   `json:"config_dir"`
+	LinphPath         string   `json:"linph_path"`
+	CompatPaths       []string `json:"compat_paths"`
+	PsiphonBinaryPath string   `json:"psiphon_binary_path"`
+	PsiphonConfigPath string   `json:"psiphon_config_path"`
+	ManifestPath      string   `json:"manifest_path"`
+}
+
+func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Writer) int {
+	opt := installOptions{
+		BaseConfig:       filepath.Join(repoRoot, "psiphon.config"),
+		InstallBinDir:    filepath.Dir(installedLinphLauncher),
+		InstallConfigDir: installedPsiphonConfigDir,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--binary":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--binary requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.BinaryPath = args[i+1]
+			i++
+		case "--base-config":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--base-config requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.BaseConfig = args[i+1]
+			i++
+		case "--install-bin-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--install-bin-dir requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstallBinDir = args[i+1]
+			i++
+		case "--install-config-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--install-config-dir requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstallConfigDir = args[i+1]
+			i++
+		case "--force":
+			opt.Force = true
+		case "--installed-slot-count":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--installed-slot-count requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			count, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "--installed-slot-count must be an integer\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstalledSlotCount = count
+			opt.InstalledProfileSet = true
+			i++
+		case "--installed-http-port":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--installed-http-port requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			port, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "--installed-http-port must be an integer\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstalledHTTPPort = port
+			opt.InstalledProfileSet = true
+			i++
+		case "--installed-socks-port":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--installed-socks-port requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			port, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "--installed-socks-port must be an integer\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstalledSocksPort = port
+			opt.InstalledProfileSet = true
+			i++
+		case "--installed-regions":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--installed-regions requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstalledRegionsCSV = args[i+1]
+			opt.InstalledProfileSet = true
+			i++
+		case "--help", "-h":
+			installUsage(stdout, usageName)
+			return 0
+		default:
+			fmt.Fprintf(stderr, "unknown install option: %s\n", args[i])
+			installUsage(stderr, usageName)
+			return ExitUsage
+		}
+	}
+
+	layout := buildInstallLayout(opt.InstallBinDir, opt.InstallConfigDir)
+	managedPaths, err := managedInstallPaths(layout.BinDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to read existing install manifest: %v\n", err)
+		return ExitValidationFailed
+	}
+
+	runtimeRoot := filepath.Join(repoRoot, ".work", "psiphon-harness")
+	sourceBinary, ok := resolveBinary(repoRoot, opt.BinaryPath, runtimeRoot)
+	if !ok {
+		fmt.Fprintf(stderr, "unable to locate psiphon-tunnel-core-x86_64\n")
+		return ExitBinaryNotFound
+	}
+	if !fileExists(opt.BaseConfig) {
+		fmt.Fprintf(stderr, "base config not found: %s\n", opt.BaseConfig)
+		return ExitUsage
+	}
+
+	installedProfile, err := resolveInstalledProfile(repoRoot, opt)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to resolve installed profile: %v\n", err)
+		return ExitUsage
+	}
+	installedSpecs, err := deriveInstalledSlotSpecs(layout, installedProfile)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to derive installed slots: %v\n", err)
+		return ExitValidationFailed
+	}
+	sourceLinph, err := currentExecutablePath()
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to resolve current executable: %v\n", err)
+		return ExitValidationFailed
+	}
+
+	if err := os.MkdirAll(layout.BinDir, 0o755); err != nil {
+		fmt.Fprintf(stderr, "failed to create install bin dir %s: %v\n", layout.BinDir, err)
+		return ExitValidationFailed
+	}
+	if err := os.MkdirAll(layout.ConfigDir, 0o755); err != nil {
+		fmt.Fprintf(stderr, "failed to create install config dir %s: %v\n", layout.ConfigDir, err)
+		return ExitValidationFailed
+	}
+	if err := os.MkdirAll(layout.installedRuntimeRoot(), 0o755); err != nil {
+		fmt.Fprintf(stderr, "failed to create installed runtime root %s: %v\n", layout.installedRuntimeRoot(), err)
+		return ExitValidationFailed
+	}
+
+	for _, path := range append(layout.allPaths(), layout.ManifestPath) {
+		if sameCleanPath(path, sourceLinph) {
+			continue
+		}
+		if err := prepareManagedDestination(path, managedPaths, opt.Force); err != nil {
+			fmt.Fprintf(stderr, "failed to prepare %s: %v\n", path, err)
+			return ExitValidationFailed
+		}
+	}
+
+	if err := copyFileAtomic(sourceBinary, layout.PsiphonBinaryPath, 0o755); err != nil {
+		fmt.Fprintf(stderr, "failed to install tunnel core: %v\n", err)
+		return ExitValidationFailed
+	}
+	if err := copyFileAtomic(opt.BaseConfig, layout.PsiphonConfigPath, 0o644); err != nil {
+		fmt.Fprintf(stderr, "failed to install config: %v\n", err)
+		return ExitValidationFailed
+	}
+	if !sameCleanPath(sourceLinph, layout.LinphPath) {
+		if err := copyFileAtomic(sourceLinph, layout.LinphPath, 0o755); err != nil {
+			fmt.Fprintf(stderr, "failed to install linph: %v\n", err)
+			return ExitValidationFailed
+		}
+	}
+	for _, aliasPath := range layout.CompatPaths {
+		if err := createAlias(aliasPath, layout.LinphPath); err != nil {
+			fmt.Fprintf(stderr, "failed to install alias %s: %v\n", aliasPath, err)
+			return ExitValidationFailed
+		}
+	}
+	if err := writeInstallManifest(layout); err != nil {
+		fmt.Fprintf(stderr, "failed to write install manifest: %v\n", err)
+		return ExitValidationFailed
+	}
+
+	installedApp := &app{stdout: stdout, stderr: stderr, repoRoot: repoRoot, owner: usageName, usageName: usageName}
+	if code := installedApp.withInstalledLock(layout, func() int {
+		if err := writeInstalledProfile(layout.installedProfilePath(), installedProfile); err != nil {
+			fmt.Fprintf(stderr, "failed to write installed profile: %v\n", err)
+			return ExitValidationFailed
+		}
+		return installedApp.syncInstalledSlots(layout, installedProfile, installedSpecs, false)
+	}); code != 0 {
+		return code
+	}
+
+	fmt.Fprintf(stdout, "installed linph to %s\n", layout.LinphPath)
+	fmt.Fprintf(stdout, "installed tunnel core to %s\n", layout.PsiphonBinaryPath)
+	fmt.Fprintf(stdout, "installed config to %s\n", layout.PsiphonConfigPath)
+	fmt.Fprintln(stdout, "installed slot ports:")
+	fmt.Fprintln(stdout, installedPortsCSV(installedSpecs))
+	return 0
+}
+
+func runUninstall(usageName string, args []string, stdout, stderr io.Writer) int {
+	opt := uninstallOptions{
+		InstallBinDir:    filepath.Dir(installedLinphLauncher),
+		InstallConfigDir: installedPsiphonConfigDir,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--install-bin-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--install-bin-dir requires a value\n")
+				uninstallUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstallBinDir = args[i+1]
+			opt.InstallBinDirSet = true
+			i++
+		case "--install-config-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--install-config-dir requires a value\n")
+				uninstallUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.InstallConfigDir = args[i+1]
+			opt.InstallConfigDirSet = true
+			i++
+		case "--purge":
+			opt.Purge = true
+		case "--help", "-h":
+			uninstallUsage(stdout, usageName)
+			return 0
+		default:
+			fmt.Fprintf(stderr, "unknown uninstall option: %s\n", args[i])
+			uninstallUsage(stderr, usageName)
+			return ExitUsage
+		}
+	}
+
+	layout, err := uninstallLayout(opt)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to read install manifest: %v\n", err)
+		return ExitValidationFailed
+	}
+	installedApp := &app{stdout: stdout, stderr: stderr, owner: usageName, usageName: usageName}
+	if code := installedApp.withInstalledLock(layout, func() int {
+		return installedApp.stopInstalledSlots(layout)
+	}); code != 0 {
+		return code
+	}
+
+	for _, path := range append([]string{layout.LinphPath}, layout.CompatPaths...) {
+		if err := removePathIfExists(path); err != nil {
+			fmt.Fprintf(stderr, "failed to remove %s: %v\n", path, err)
+			return ExitValidationFailed
+		}
+	}
+	if !sameCleanPath(layout.ManifestPath, layout.PsiphonConfigPath) {
+		if err := removePathIfExists(layout.ManifestPath); err != nil {
+			fmt.Fprintf(stderr, "failed to remove %s: %v\n", layout.ManifestPath, err)
+			return ExitValidationFailed
+		}
+	}
+	if err := removePathIfExists(layout.PsiphonBinaryPath); err != nil {
+		fmt.Fprintf(stderr, "failed to remove %s: %v\n", layout.PsiphonBinaryPath, err)
+		return ExitValidationFailed
+	}
+	if legacyInstalledPsiphonPath != "" && !containsString(layout.CompatPaths, legacyInstalledPsiphonPath) {
+		if err := removePathIfExists(legacyInstalledPsiphonPath); err != nil {
+			fmt.Fprintf(stderr, "failed to remove %s: %v\n", legacyInstalledPsiphonPath, err)
+			return ExitValidationFailed
+		}
+	}
+
+	if opt.Purge {
+		if err := os.RemoveAll(layout.ConfigDir); err != nil {
+			fmt.Fprintf(stderr, "failed to purge %s: %v\n", layout.ConfigDir, err)
+			return ExitValidationFailed
+		}
+		fmt.Fprintf(stdout, "purged %s\n", layout.ConfigDir)
+		return 0
+	}
+
+	if err := removeDirIfEmpty(layout.ConfigDir); err != nil {
+		fmt.Fprintf(stderr, "failed to tidy %s: %v\n", layout.ConfigDir, err)
+		return ExitValidationFailed
+	}
+	fmt.Fprintf(stdout, "uninstalled linph from %s (preserved %s)\n", layout.BinDir, layout.PsiphonConfigPath)
+	return 0
+}
+
+func installUsage(w io.Writer, usageName string) {
+	fmt.Fprintf(w, `Usage:
+  %s [options]
+
+Options:
+  --binary PATH               Reviewed local tunnel-core binary to install.
+  --base-config PATH          Base config to install.
+  --install-bin-dir PATH      Install bin dir (default: %s).
+  --install-config-dir PATH   Install config dir (default: %s).
+	--force                     Overwrite existing unmanaged files.
+	--installed-slot-count N    Number of installed slots (1-5).
+	--installed-http-port N     Starting HTTP port for installed slots.
+	--installed-socks-port N    Starting SOCKS port for installed slots.
+	--installed-regions CSV     Comma-separated regions for installed slots.
+	--help                      Show this message.
+`, usageName, filepath.Dir(installedLinphLauncher), installedPsiphonConfigDir)
+}
+
+func uninstallUsage(w io.Writer, usageName string) {
+	fmt.Fprintf(w, `Usage:
+  %s [options]
+
+Options:
+  --install-bin-dir PATH      Install bin dir (default: %s).
+  --install-config-dir PATH   Install config dir (default: %s).
+  --purge                     Remove the entire installed config directory.
+  --help                      Show this message.
+`, usageName, filepath.Dir(installedLinphLauncher), installedPsiphonConfigDir)
+}
+
+func fallbackInstallLayout() installLayout {
+	return installLayout{
+		BinDir:            filepath.Dir(installedLinphLauncher),
+		ConfigDir:         installedPsiphonConfigDir,
+		LinphPath:         installedLinphLauncher,
+		CompatPaths:       []string{installedPsiphonLauncher, installedPlinstallerLauncher, installedPluninstallerPath},
+		PsiphonBinaryPath: installedPsiphonBinaryPath,
+		PsiphonConfigPath: installedPsiphonConfigPath,
+		ManifestPath:      filepath.Join(filepath.Dir(installedLinphLauncher), installedManifestFilename),
+	}
+}
+
+func buildInstallLayout(binDir, configDir string) installLayout {
+	return installLayout{
+		BinDir:            binDir,
+		ConfigDir:         configDir,
+		LinphPath:         filepath.Join(binDir, "linph"),
+		CompatPaths:       []string{filepath.Join(binDir, "psiphon"), filepath.Join(binDir, "plinstaller2"), filepath.Join(binDir, "pluninstaller")},
+		PsiphonBinaryPath: filepath.Join(configDir, "psiphon-tunnel-core-x86_64"),
+		PsiphonConfigPath: filepath.Join(configDir, "psiphon.config"),
+		ManifestPath:      filepath.Join(binDir, installedManifestFilename),
+	}
+}
+
+func (layout installLayout) allPaths() []string {
+	paths := []string{layout.LinphPath, layout.PsiphonBinaryPath, layout.PsiphonConfigPath}
+	paths = append(paths, layout.CompatPaths...)
+	return paths
+}
+
+func activeInstallLayout() installLayout {
+	manifestPath := filepath.Join(filepath.Dir(installedLinphLauncher), installedManifestFilename)
+	if currentPath, err := currentExecutablePath(); err == nil && currentPath != "" {
+		manifestPath = filepath.Join(filepath.Dir(currentPath), installedManifestFilename)
+	}
+	manifest, ok, err := readInstallManifest(manifestPath)
+	if err == nil && ok {
+		return layoutFromManifest(manifest)
+	}
+	return fallbackInstallLayout()
+}
+
+func uninstallLayout(opt uninstallOptions) (installLayout, error) {
+	if opt.InstallBinDirSet {
+		manifest, ok, err := readInstallManifest(filepath.Join(opt.InstallBinDir, installedManifestFilename))
+		if err != nil {
+			return installLayout{}, err
+		}
+		if ok {
+			return layoutFromManifest(manifest), nil
+		}
+	}
+	if !opt.InstallBinDirSet {
+		if currentPath, err := currentExecutablePath(); err == nil && currentPath != "" {
+			manifest, ok, err := readInstallManifest(filepath.Join(filepath.Dir(currentPath), installedManifestFilename))
+			if err != nil {
+				return installLayout{}, err
+			}
+			if ok {
+				return layoutFromManifest(manifest), nil
+			}
+		}
+	}
+
+	if opt.InstallBinDir == filepath.Dir(installedLinphLauncher) && opt.InstallConfigDir == installedPsiphonConfigDir {
+		return fallbackInstallLayout(), nil
+	}
+	return buildInstallLayout(opt.InstallBinDir, opt.InstallConfigDir), nil
+}
+
+func managedInstallPaths(binDir string) (map[string]struct{}, error) {
+	manifest, ok, err := readInstallManifest(filepath.Join(binDir, installedManifestFilename))
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return map[string]struct{}{}, nil
+	}
+	managed := map[string]struct{}{}
+	layout := layoutFromManifest(manifest)
+	for _, path := range append(layout.allPaths(), layout.ManifestPath) {
+		managed[path] = struct{}{}
+	}
+	return managed, nil
+}
+
+func readInstallManifest(path string) (installManifest, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return installManifest{}, false, nil
+		}
+		return installManifest{}, false, err
+	}
+	var manifest installManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return installManifest{}, false, err
+	}
+	return manifest, true, nil
+}
+
+func writeInstallManifest(layout installLayout) error {
+	manifest := installManifest{
+		Version:           1,
+		BinDir:            layout.BinDir,
+		ConfigDir:         layout.ConfigDir,
+		LinphPath:         layout.LinphPath,
+		CompatPaths:       append([]string(nil), layout.CompatPaths...),
+		PsiphonBinaryPath: layout.PsiphonBinaryPath,
+		PsiphonConfigPath: layout.PsiphonConfigPath,
+		ManifestPath:      layout.ManifestPath,
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return copyBytesAtomic(data, layout.ManifestPath, 0o644)
+}
+
+func layoutFromManifest(manifest installManifest) installLayout {
+	return installLayout{
+		BinDir:            manifest.BinDir,
+		ConfigDir:         manifest.ConfigDir,
+		LinphPath:         manifest.LinphPath,
+		CompatPaths:       append([]string(nil), manifest.CompatPaths...),
+		PsiphonBinaryPath: manifest.PsiphonBinaryPath,
+		PsiphonConfigPath: manifest.PsiphonConfigPath,
+		ManifestPath:      manifest.ManifestPath,
+	}
+}
+
+func resolveInstalledProfile(repoRoot string, opt installOptions) (installedProfile, error) {
+	if !opt.InstalledProfileSet {
+		return installedProfileFromBaseConfig(repoRoot, opt.BaseConfig)
+	}
+	if opt.InstalledSlotCount == 0 || opt.InstalledHTTPPort == 0 || opt.InstalledSocksPort == 0 || strings.TrimSpace(opt.InstalledRegionsCSV) == "" {
+		return installedProfile{}, fmt.Errorf("all installed profile flags must be provided together")
+	}
+	return installedProfileFromCSV(opt.InstalledSlotCount, opt.InstalledHTTPPort, opt.InstalledSocksPort, opt.InstalledRegionsCSV)
+}
+
+func prepareManagedDestination(path string, managedPaths map[string]struct{}, force bool) error {
+	_, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if _, ok := managedPaths[path]; ok || force {
+		return os.RemoveAll(path)
+	}
+	return fmt.Errorf("path already exists and is not managed by linph (use --force): %s", path)
+}
+
+func createAlias(aliasPath, linphPath string) error {
+	target := filepath.Base(linphPath)
+	if err := os.Symlink(target, aliasPath); err == nil {
+		return nil
+	}
+	return copyFileAtomic(linphPath, aliasPath, 0o755)
+}
+
+func copyFileAtomic(sourcePath, destPath string, mode fs.FileMode) error {
+	if sameCleanPath(sourcePath, destPath) {
+		return nil
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	return copyBytesAtomic(data, destPath, mode)
+}
+
+func copyBytesAtomic(data []byte, destPath string, mode fs.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+	tempFile, err := os.CreateTemp(filepath.Dir(destPath), ".linph-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if _, err := tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, destPath)
+}
+
+func removePathIfExists(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.RemoveAll(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func removeDirIfEmpty(path string) error {
+	if path == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if len(entries) != 0 {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func sameCleanPath(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}

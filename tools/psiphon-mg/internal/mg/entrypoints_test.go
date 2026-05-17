@@ -2,6 +2,7 @@ package mg
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,91 +10,245 @@ import (
 )
 
 func TestPsiphonReturns127WhenBinaryIsMissing(t *testing.T) {
-	prevBinary := installedPsiphonBinaryPath
-	installedPsiphonBinaryPath = filepath.Join(t.TempDir(), "missing-psiphon-binary")
-	defer func() {
-		installedPsiphonBinaryPath = prevBinary
-	}()
+	restore := overrideInstallGlobals(t)
+	defer restore()
 
-	if code := RunPsiphon(&bytes.Buffer{}, &bytes.Buffer{}); code != 127 {
-		t.Fatalf("expected missing-binary exit 127, got %d", code)
+	tempDir := t.TempDir()
+	installedLinphLauncher = filepath.Join(tempDir, "bin", "linph")
+	installedPsiphonLauncher = filepath.Join(tempDir, "bin", "psiphon")
+	installedPlinstallerLauncher = filepath.Join(tempDir, "bin", "plinstaller2")
+	installedPluninstallerPath = filepath.Join(tempDir, "bin", "pluninstaller")
+	legacyInstalledPsiphonPath = filepath.Join(tempDir, "legacy", "psiphon")
+	installedPsiphonConfigDir = filepath.Join(tempDir, "etc", "psiphon")
+	installedPsiphonBinaryPath = filepath.Join(installedPsiphonConfigDir, "psiphon-tunnel-core-x86_64")
+	installedPsiphonConfigPath = filepath.Join(installedPsiphonConfigDir, "psiphon.config")
+	currentExecutablePath = func() (string, error) {
+		return "", errors.New("not installed")
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if exitCode := RunPsiphon(&stdout, &stderr); exitCode != 127 {
+		t.Fatalf("RunPsiphon() exit = %d, want 127", exitCode)
 	}
 }
 
-func TestPluninstallerRemovesConfiguredPaths(t *testing.T) {
+func TestRunInstallAndRunPsiphonViaManifest(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
 	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
-	launcherPath := filepath.Join(t.TempDir(), "usr", "bin", "psiphon")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("create config dir: %v", err)
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(launcherPath), 0o755); err != nil {
-		t.Fatalf("create launcher dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("seed config dir: %v", err)
-	}
-	if err := os.WriteFile(launcherPath, []byte("launcher\n"), 0o755); err != nil {
-		t.Fatalf("seed launcher: %v", err)
+	t.Setenv("FAKE_PSIPHON_AUTO_EXIT_DELAY_MS", "1500")
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
 	}
 
-	prevConfigDir := installedPsiphonConfigDir
-	prevLauncher := installedPsiphonLauncher
-	installedPsiphonConfigDir = configDir
-	installedPsiphonLauncher = launcherPath
-	defer func() {
-		installedPsiphonConfigDir = prevConfigDir
-		installedPsiphonLauncher = prevLauncher
-	}()
+	var installStdout bytes.Buffer
+	var installStderr bytes.Buffer
+	installArgs := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}
+	if exitCode := runInstall(repoRoot, "linph install", installArgs, &installStdout, &installStderr); exitCode != 0 {
+		t.Fatalf("runInstall() exit = %d, stderr = %s", exitCode, installStderr.String())
+	}
 
-	if code := RunPluninstaller(&bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("unexpected exit code: %d", code)
+	layout := buildInstallLayout(binDir, configDir)
+	for _, path := range append(layout.allPaths(), layout.ManifestPath) {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("expected installed path %q: %v", path, err)
+		}
 	}
-	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
-		t.Fatalf("expected config dir removed, stat err=%v", err)
+
+	manifest, ok, err := readInstallManifest(layout.ManifestPath)
+	if err != nil {
+		t.Fatalf("readInstallManifest(%q): %v", layout.ManifestPath, err)
 	}
-	if _, err := os.Stat(launcherPath); !os.IsNotExist(err) {
-		t.Fatalf("expected launcher removed, stat err=%v", err)
+	if !ok {
+		t.Fatalf("expected install manifest at %q", layout.ManifestPath)
+	}
+	if manifest.LinphPath != layout.LinphPath {
+		t.Fatalf("manifest LinphPath = %q, want %q", manifest.LinphPath, layout.LinphPath)
+	}
+	if manifest.PsiphonBinaryPath != layout.PsiphonBinaryPath {
+		t.Fatalf("manifest PsiphonBinaryPath = %q, want %q", manifest.PsiphonBinaryPath, layout.PsiphonBinaryPath)
+	}
+	if manifest.PsiphonConfigPath != layout.PsiphonConfigPath {
+		t.Fatalf("manifest PsiphonConfigPath = %q, want %q", manifest.PsiphonConfigPath, layout.PsiphonConfigPath)
+	}
+
+	currentExecutablePath = func() (string, error) {
+		return layout.LinphPath, nil
+	}
+	var runStdout bytes.Buffer
+	var runStderr bytes.Buffer
+	if exitCode := RunLinphAlias("psiphon", nil, &runStdout, &runStderr); exitCode != 0 {
+		t.Fatalf("RunLinphAlias(psiphon) exit = %d, stderr = %s", exitCode, runStderr.String())
 	}
 }
 
-func TestPluninstallerIgnoresMissingLauncher(t *testing.T) {
+func TestRunUninstallPreservesConfigByDefault(t *testing.T) {
+	binDir, configDir, _ := installFixture(t)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{"--install-bin-dir", binDir, "--install-config-dir", configDir}
+	if exitCode := runUninstall("linph uninstall", args, &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("runUninstall() exit = %d, stderr = %s", exitCode, stderr.String())
+	}
+
+	layout := buildInstallLayout(binDir, configDir)
+	for _, path := range append([]string{layout.LinphPath, layout.PsiphonBinaryPath, layout.ManifestPath}, layout.CompatPaths...) {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected %q to be removed, err = %v", path, err)
+		}
+	}
+	if _, err := os.Stat(layout.PsiphonConfigPath); err != nil {
+		t.Fatalf("expected config to remain at %q: %v", layout.PsiphonConfigPath, err)
+	}
+	if !strings.Contains(stdout.String(), "preserved") {
+		t.Fatalf("uninstall stdout = %q, want preserved message", stdout.String())
+	}
+}
+
+func TestRunUninstallPurgeRemovesConfigDir(t *testing.T) {
+	binDir, configDir, _ := installFixture(t)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{"--install-bin-dir", binDir, "--install-config-dir", configDir, "--purge"}
+	if exitCode := runUninstall("linph uninstall", args, &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("runUninstall(--purge) exit = %d, stderr = %s", exitCode, stderr.String())
+	}
+	if _, err := os.Stat(configDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected config dir %q to be removed, err = %v", configDir, err)
+	}
+	if !strings.Contains(stdout.String(), "purged") {
+		t.Fatalf("uninstall stdout = %q, want purge message", stdout.String())
+	}
+}
+
+func TestRunInstallRejectsUnmanagedExistingFile(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := t.TempDir()
+	binDir := filepath.Join(t.TempDir(), "bin")
 	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
-	launcherPath := filepath.Join(t.TempDir(), "usr", "bin", "psiphon")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("create config dir: %v", err)
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", binDir, err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("seed config dir: %v", err)
+	blockingPath := filepath.Join(binDir, "linph")
+	if err := os.WriteFile(blockingPath, []byte("unmanaged\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", blockingPath, err)
+	}
+	sourceLinph := writeExecutableScript(t, filepath.Join(repoRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := writeExecutableScript(t, filepath.Join(repoRoot, "psiphon-tunnel-core-x86_64"), "#!/bin/sh\nexit 0\n")
+	baseConfig := filepath.Join(repoRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
 	}
 
-	prevConfigDir := installedPsiphonConfigDir
-	prevLauncher := installedPsiphonLauncher
-	installedPsiphonConfigDir = configDir
-	installedPsiphonLauncher = launcherPath
-	defer func() {
-		installedPsiphonConfigDir = prevConfigDir
-		installedPsiphonLauncher = prevLauncher
-	}()
-
-	if code := RunPluninstaller(&bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
-		t.Fatalf("unexpected exit code when launcher is absent: %d", code)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
 	}
-	if _, err := os.Stat(configDir); !os.IsNotExist(err) {
-		t.Fatalf("expected config dir removed, stat err=%v", err)
+	exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr)
+	if exitCode != ExitValidationFailed {
+		t.Fatalf("runInstall() exit = %d, want %d", exitCode, ExitValidationFailed)
+	}
+	if !strings.Contains(stderr.String(), "use --force") {
+		t.Fatalf("runInstall() stderr = %q, want unmanaged path guidance", stderr.String())
 	}
 }
 
-func TestPlinstaller2ReportsDisabledDownload(t *testing.T) {
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-	if code := RunPlinstaller2(stdout, stderr); code != ExitDownloadFailed {
-		t.Fatalf("expected ExitDownloadFailed=%d, got %d", ExitDownloadFailed, code)
+func installFixture(t *testing.T) (binDir, configDir string, layout installLayout) {
+	t.Helper()
+
+	restore := overrideInstallGlobals(t)
+	t.Cleanup(restore)
+
+	repoRoot := findRepoRoot(t)
+	binDir = filepath.Join(t.TempDir(), "bin")
+	configDir = filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
 	}
-	output := stderr.String()
-	if !strings.Contains(output, "Automatic remote download/install is disabled until executable authenticity verification exists.") {
-		t.Fatalf("missing primary disabled-download message: %s", output)
+	t.Setenv("FAKE_PSIPHON_AUTO_EXIT_DELAY_MS", "1500")
+	currentExecutablePath = func() (string, error) {
+		return sourceLinph, nil
 	}
-	if !strings.Contains(output, "psiphon-mg with an explicit --binary path") {
-		t.Fatalf("missing follow-up guidance: %s", output)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
 	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("runInstall() exit = %d, stderr = %s", exitCode, stderr.String())
+	}
+	layout = buildInstallLayout(binDir, configDir)
+	return binDir, configDir, layout
+}
+
+func overrideInstallGlobals(t *testing.T) func() {
+	t.Helper()
+
+	origConfigDir := installedPsiphonConfigDir
+	origBinaryPath := installedPsiphonBinaryPath
+	origConfigPath := installedPsiphonConfigPath
+	origLinphLauncher := installedLinphLauncher
+	origPsiphonLauncher := installedPsiphonLauncher
+	origPlinstallerLauncher := installedPlinstallerLauncher
+	origPluninstallerPath := installedPluninstallerPath
+	origLegacyPsiphonPath := legacyInstalledPsiphonPath
+	origCurrentExecutablePath := currentExecutablePath
+
+	return func() {
+		installedPsiphonConfigDir = origConfigDir
+		installedPsiphonBinaryPath = origBinaryPath
+		installedPsiphonConfigPath = origConfigPath
+		installedLinphLauncher = origLinphLauncher
+		installedPsiphonLauncher = origPsiphonLauncher
+		installedPlinstallerLauncher = origPlinstallerLauncher
+		installedPluninstallerPath = origPluninstallerPath
+		legacyInstalledPsiphonPath = origLegacyPsiphonPath
+		currentExecutablePath = origCurrentExecutablePath
+	}
+}
+
+func writeExecutableScript(t *testing.T, path, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	return path
 }
