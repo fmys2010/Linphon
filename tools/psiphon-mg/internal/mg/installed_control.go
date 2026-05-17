@@ -223,6 +223,10 @@ func (a *app) commandInstalledSwitchCtry(layout installLayout, args []string) in
 		a.err("need at least %d region(s) for %d slot(s)", profile.SlotCount, profile.SlotCount)
 		return ExitUsage
 	}
+	if err := validateInstalledRegions(a.repoRoot, regions[:profile.SlotCount]); err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
 	profile.Regions = append([]string(nil), regions[:profile.SlotCount]...)
 	updatedSpecs, err := deriveInstalledSlotSpecs(layout, profile)
 	if err != nil {
@@ -254,6 +258,15 @@ func (a *app) installedProfileAndSpecs(layout installLayout) (installedProfile, 
 }
 
 func (a *app) installedProfileAndSpecsFromProfile(layout installLayout, profile installedProfile) (installedProfile, []installedSlotSpec, error) {
+	if profile.SlotCount < 1 || profile.SlotCount > installedSlotCountHardLimit {
+		return installedProfile{}, nil, fmt.Errorf("slot count must be between 1 and %d", installedSlotCountHardLimit)
+	}
+	if len(profile.Regions) < profile.SlotCount {
+		return installedProfile{}, nil, fmt.Errorf("need at least %d region(s) for %d slot(s)", profile.SlotCount, profile.SlotCount)
+	}
+	if err := validateInstalledRegions(a.repoRoot, profile.Regions[:profile.SlotCount]); err != nil {
+		return installedProfile{}, nil, err
+	}
 	specs, err := deriveInstalledSlotSpecs(layout, profile)
 	if err != nil {
 		return installedProfile{}, nil, err

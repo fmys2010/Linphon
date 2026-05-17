@@ -76,9 +76,8 @@ func resolveBinary(repoRoot, explicitBinary, runtimeRoot string) (string, bool) 
 	)
 
 	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() {
-			_ = os.Chmod(candidate, 0o755)
+		info, err := os.Lstat(candidate)
+		if err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
 			return candidate, true
 		}
 	}

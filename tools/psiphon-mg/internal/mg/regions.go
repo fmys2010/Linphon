@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	defaultRegionsFallbackCSV = "AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US"
+	defaultRegionsFallbackCSV  = "AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US"
 	regionsCatalogRelativePath = "regions.txt"
 )
 

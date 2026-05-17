@@ -97,8 +97,8 @@ func parseHarnessInstanceSpec(raw string) (harnessInstanceSpec, error) {
 
 func parseHarnessInstancePort(raw, label, source string) (int, error) {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || value <= 0 {
-		return 0, fmt.Errorf("invalid %s port in --instance value %q", label, source)
+	if err != nil || value < 1 || value > 65535 {
+		return 0, fmt.Errorf("invalid %s port in --instance value %q: must be between 1 and 65535", label, source)
 	}
 	return value, nil
 }
@@ -110,6 +110,13 @@ func validateHarnessInstanceSpecs(specs []harnessInstanceSpec) error {
 
 	for index, spec := range specs {
 		instanceNumber := index + 1
+
+		if err := validateHarnessInstancePortRange("HTTP", instanceNumber, spec.HTTPPort); err != nil {
+			return err
+		}
+		if err := validateHarnessInstancePortRange("SOCKS", instanceNumber, spec.SocksPort); err != nil {
+			return err
+		}
 
 		if previous, ok := seenHTTP[spec.HTTPPort]; ok {
 			return fmt.Errorf("duplicate HTTP port %d for instance %d and %d", spec.HTTPPort, previous, instanceNumber)
@@ -130,6 +137,13 @@ func validateHarnessInstanceSpecs(specs []harnessInstanceSpec) error {
 		seenAny[spec.SocksPort] = fmt.Sprintf("SOCKS port for instance %d", instanceNumber)
 	}
 
+	return nil
+}
+
+func validateHarnessInstancePortRange(label string, instanceNumber, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("%s port for instance %d must be between 1 and 65535: %d", label, instanceNumber, port)
+	}
 	return nil
 }
 
