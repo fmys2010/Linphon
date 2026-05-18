@@ -37,10 +37,10 @@ bash ./uninstall.sh
 bash ./uninstall.sh --purge
 ```
 
-- `install.sh` 会本地构建 `linph`；在交互终端且未传参时会先问 `english/中文`，再问是否安装、单端口/多端口、端口与地区，并在执行前预览**最终推导后的每槽端口**
+- `install.sh` 会本地构建 `linph`；在交互终端且未传参时会先问 `english/中文`，再问是否安装，并在继续收集端口/地区前先预检 `go`：如果缺失且检测到受支持的包管理器，会询问是否自动安装；之后再进入单端口/多端口、端口与地区，并在执行前预览**最终推导后的每槽端口**
 - 交互安装会按 VPS 有效内存自动计算默认槽位上限：`floor(totalMiB / 100)`，等价于“50%% 内存 / 50 MiB 每隧道”；会优先使用 cgroup 限制，其次才是宿主机总内存
 - `bash ./install.sh --fk`、`linph install --fk`、`plinstaller2 --fk` 会忽略这个内存上限，但绝对硬上限仍然是 `28` 个槽位
-- 交互安装会在确认前预警未托管安装目标、旧 `psiphon.service` 冲突和端口越界；显式传入 install 参数，或在非交互环境调用时，`install.sh` 会保持原有参数透传行为
+- 交互安装会在确认前预警未托管安装目标、旧 `psiphon.service` 冲突和端口越界；显式传入 install 参数，或在非交互环境调用时，`install.sh` 不会弹出依赖安装提示，而是对缺失的 `go` / `sudo` 直接快速失败并给出手动处理提示
 - `uninstall.sh` 会优先调用已安装的 `linph uninstall`
 - 默认卸载会保留 `/etc/psiphon/psiphon.config`
 - `--purge` 会删除整个 `/etc/psiphon`

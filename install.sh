@@ -119,8 +119,186 @@ print_supported_regions() {
 
 ensure_command() {
   local name="$1"
-  if ! command -v "$name" >/dev/null 2>&1; then
+  if ! command_exists "$name"; then
     lang_eprintf "required command not found: %s\n" "缺少必需命令：%s\n" "$name"
+    exit 1
+  fi
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+can_run_privileged_command() {
+  [[ "$(id -u)" -eq 0 ]] || command_exists sudo
+}
+
+detect_go_package_manager() {
+  local manager=""
+  for manager in apt-get dnf yum apk pacman zypper; do
+    if command_exists "$manager"; then
+      printf '%s\n' "$manager"
+      return 0
+    fi
+  done
+  return 1
+}
+
+go_package_name_for_manager() {
+  case "$1" in
+    apt-get)
+      printf '%s\n' 'golang-go'
+      ;;
+    dnf|yum)
+      printf '%s\n' 'golang'
+      ;;
+    apk|pacman|zypper)
+      printf '%s\n' 'go'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+describe_go_install_command() {
+  local manager="$1"
+  local package="$2"
+  local prefix=""
+
+  if [[ "$(id -u)" -ne 0 ]]; then
+    prefix='sudo '
+  fi
+
+  case "$manager" in
+    apt-get)
+      printf '%sapt-get update && %sapt-get install -y %s\n' "$prefix" "$prefix" "$package"
+      ;;
+    dnf)
+      printf '%sdnf install -y %s\n' "$prefix" "$package"
+      ;;
+    yum)
+      printf '%syum install -y %s\n' "$prefix" "$package"
+      ;;
+    apk)
+      printf '%sapk add %s\n' "$prefix" "$package"
+      ;;
+    pacman)
+      printf '%spacman -Sy --noconfirm %s\n' "$prefix" "$package"
+      ;;
+    zypper)
+      printf '%szypper --non-interactive install %s\n' "$prefix" "$package"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_privileged_command() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+    return $?
+  fi
+
+  sudo "$@"
+}
+
+run_go_auto_install() {
+  local manager="$1"
+  local package="$2"
+
+  case "$manager" in
+    apt-get)
+      run_privileged_command apt-get update && run_privileged_command apt-get install -y "$package"
+      ;;
+    dnf)
+      run_privileged_command dnf install -y "$package"
+      ;;
+    yum)
+      run_privileged_command yum install -y "$package"
+      ;;
+    apk)
+      run_privileged_command apk add "$package"
+      ;;
+    pacman)
+      run_privileged_command pacman -Sy --noconfirm "$package"
+      ;;
+    zypper)
+      run_privileged_command zypper --non-interactive install "$package"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+preflight_build_dependencies() {
+  local allow_auto_install="${1:-0}"
+  local require_privileged_install="${2:-1}"
+  local reply=""
+  local manager=""
+  local package=""
+  local install_command=""
+
+  if ! command_exists go; then
+    if [[ "$allow_auto_install" -eq 1 && -t 0 && -t 1 ]]; then
+      if ! can_run_privileged_command; then
+        lang_eprintf \
+          'Go is required to build linph, and automatic installation needs root or sudo. Please install Go manually and rerun.\n' \
+          '构建 linph 需要 go，而自动安装需要 root 或 sudo。请先手动安装 Go 后重试。\n'
+        exit 1
+      fi
+
+      if manager="$(detect_go_package_manager 2>/dev/null)" && package="$(go_package_name_for_manager "$manager" 2>/dev/null)"; then
+        install_command="$(describe_go_install_command "$manager" "$package")"
+        read_lang_prompt reply \
+          'Go is required to build linph. Install it now with `%s`? [Y/n] ' \
+          '构建 linph 需要 go。是否现在用 `%s` 自动安装？[Y/n] ' \
+          "$install_command"
+        case "$reply" in
+          ""|y|Y|yes|YES|Yes)
+            if ! run_go_auto_install "$manager" "$package"; then
+              lang_eprintf \
+                'Automatic Go installation failed. Please install Go manually and rerun.\n' \
+                'Go 自动安装失败。请先手动安装 Go 后重试。\n'
+              exit 1
+            fi
+            hash -r
+            if ! command_exists go; then
+              lang_eprintf \
+                'Go is still not available after automatic installation. Please check PATH and rerun.\n' \
+                '自动安装后仍未找到 Go。请检查 PATH 后重试。\n'
+              exit 1
+            fi
+            ;;
+          *)
+            lang_eprintf \
+              'Go is required to build linph. Please install it manually and rerun.\n' \
+              '构建 linph 需要 go。请先手动安装后重试。\n'
+            exit 1
+            ;;
+        esac
+      else
+        lang_eprintf \
+          'Go is required to build linph. Automatic installation is not supported on this system, so please install Go manually and rerun.\n' \
+          '构建 linph 需要 go。当前系统不支持脚本自动安装，请先手动安装 Go 后重试。\n'
+        exit 1
+      fi
+    else
+      lang_eprintf "required command not found: %s\n" "缺少必需命令：%s\n" 'go'
+      lang_eprintf \
+        'install.sh builds linph locally, so please install Go first and rerun.\n' \
+        'install.sh 会在本地构建 linph，请先安装 Go 后重试。\n'
+      exit 1
+    fi
+  fi
+
+  if [[ "$require_privileged_install" -ne 0 && "$(id -u)" -ne 0 ]] && ! command_exists sudo; then
+    lang_eprintf \
+      'Non-root install requires sudo to write into %s and %s. Please install sudo or rerun as root.\n' \
+      '非 root 安装需要 sudo 才能写入 %s 和 %s。请安装 sudo，或改为 root 身份重试。\n' \
+      "$DEFAULT_INSTALL_BIN_DIR" "$DEFAULT_INSTALL_CONFIG_DIR"
     exit 1
   fi
 }
@@ -715,6 +893,7 @@ run_interactive_install() {
       ;;
   esac
 
+  preflight_build_dependencies 1
   print_slot_cap_guidance
   choose_install_mode install_mode
 
@@ -790,6 +969,7 @@ run_interactive_install() {
 }
 
 run_install_help() {
+  preflight_build_dependencies 0 0
   build_linph
   exec env PSIPHON_MG_REPO_ROOT="$REPO_ROOT" "$LINPH_BIN" install "$@"
 }
@@ -810,6 +990,7 @@ main() {
     run_interactive_install "$interactive_force_unlock"
   fi
 
+  preflight_build_dependencies 0 1
   build_linph
   run_install "$@"
 }
