@@ -37,6 +37,20 @@ func TestRunLinphRoutesHelp(t *testing.T) {
 	}
 }
 
+func TestRunLinphRoutesVersion(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := RunLinph([]string{"--version"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("RunLinph(--version) exit = %d, want 0", exitCode)
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "Linphon "+LinphonVersion; got != want {
+		t.Fatalf("RunLinph(--version) stdout = %q, want %q", got, want)
+	}
+}
+
 func TestRunLinphRoutesMgHelp(t *testing.T) {
 	t.Parallel()
 

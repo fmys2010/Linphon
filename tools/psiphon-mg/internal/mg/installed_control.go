@@ -119,32 +119,80 @@ Commands:
 }
 
 func (a *app) commandInstalledStart(layout installLayout) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		if code := a.stopInstalledSlots(layout); code != 0 {
+			return code
+		}
+		return a.commandVGStart(layout, false)
+	}
 	profile, specs, err := a.installedProfileAndSpecs(layout)
 	if err != nil {
 		a.err("%v", err)
 		return ExitUsage
+	}
+	if code := a.stopInstalledRuntimeRoots([]string{layout.installedVGRuntimeRoot()}); code != 0 {
+		return code
 	}
 	return a.syncInstalledSlots(layout, profile, specs, false)
 }
 
 func (a *app) commandInstalledRestart(layout installLayout) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		if code := a.stopInstalledSlots(layout); code != 0 {
+			return code
+		}
+		return a.commandVGStart(layout, true)
+	}
 	profile, specs, err := a.installedProfileAndSpecs(layout)
 	if err != nil {
 		a.err("%v", err)
 		return ExitUsage
 	}
+	if code := a.stopInstalledRuntimeRoots([]string{layout.installedVGRuntimeRoot()}); code != 0 {
+		return code
+	}
 	return a.syncInstalledSlots(layout, profile, specs, true)
 }
 
 func (a *app) commandInstalledStop(layout installLayout) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		if _, _, err := a.installedVGProfileAndSpec(layout); err != nil {
+			a.err("%v", err)
+			return ExitUsage
+		}
+		return a.stopAllInstalledRuntimes(layout)
+	}
 	if _, _, err := a.installedProfileAndSpecs(layout); err != nil {
 		a.err("%v", err)
 		return ExitUsage
 	}
-	return a.stopInstalledSlots(layout)
+	return a.stopAllInstalledRuntimes(layout)
 }
 
 func (a *app) commandInstalledPort(layout installLayout) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		return a.commandVGPort(layout)
+	}
 	_, specs, err := a.installedProfileAndSpecs(layout)
 	if err != nil {
 		a.err("%v", err)
@@ -155,6 +203,14 @@ func (a *app) commandInstalledPort(layout installLayout) int {
 }
 
 func (a *app) commandInstalledCtry(layout installLayout) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		return a.commandVGCtry(layout)
+	}
 	_, specs, err := a.installedProfileAndSpecs(layout)
 	if err != nil {
 		a.err("%v", err)
@@ -165,6 +221,14 @@ func (a *app) commandInstalledCtry(layout installLayout) int {
 }
 
 func (a *app) commandInstalledLog(layout installLayout) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		return a.commandVGLog(layout)
+	}
 	_, specs, err := a.installedProfileAndSpecs(layout)
 	if err != nil {
 		a.err("%v", err)
@@ -178,6 +242,14 @@ func (a *app) commandInstalledLog(layout installLayout) int {
 }
 
 func (a *app) commandInstalledSwitchPort(layout installLayout, args []string) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		return a.commandVGSwitchPort(layout)
+	}
 	if len(args) != 2 {
 		a.installedUsage(a.stderr)
 		return ExitUsage
@@ -205,7 +277,7 @@ func (a *app) commandInstalledSwitchPort(layout installLayout, args []string) in
 		a.err("%v", err)
 		return ExitUsage
 	}
-	if err := writeInstalledProviderState(layout, installedProviderStateFromPsi(profile)); err != nil {
+	if err := updateInstalledPsiProviderState(layout, profile); err != nil {
 		a.err("failed to persist installed profile: %v", err)
 		return ExitUsage
 	}
@@ -219,6 +291,14 @@ func (a *app) commandInstalledSwitchPort(layout installLayout, args []string) in
 }
 
 func (a *app) commandInstalledSwitchCtry(layout installLayout, args []string) int {
+	provider, err := activeProviderName(layout)
+	if err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
+	if provider == installedProviderVG {
+		return a.commandVGSwitchCtry(layout, args)
+	}
 	if len(args) != 1 {
 		a.installedUsage(a.stderr)
 		return ExitUsage
@@ -243,7 +323,7 @@ func (a *app) commandInstalledSwitchCtry(layout installLayout, args []string) in
 		a.err("%v", err)
 		return ExitUsage
 	}
-	if err := writeInstalledProviderState(layout, installedProviderStateFromPsi(profile)); err != nil {
+	if err := updateInstalledPsiProviderState(layout, profile); err != nil {
 		a.err("failed to persist installed profile: %v", err)
 		return ExitUsage
 	}
@@ -254,6 +334,43 @@ func (a *app) commandInstalledSwitchCtry(layout installLayout, args []string) in
 	}
 	fmt.Fprintln(a.stdout, installedRegionsCSV(updatedSpecs))
 	return 0
+}
+
+func updateInstalledPsiProviderState(layout installLayout, profile installedProfile) error {
+	state, ok, err := loadInstalledProviderState(layout)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		state = installedProviderStateFromPsi(profile)
+	} else {
+		profile.Version = installedProfileVersion
+		state.Providers.Psi = &profile
+	}
+	return writeInstalledProviderState(layout, state)
+}
+
+func (a *app) stopAllInstalledRuntimes(layout installLayout) int {
+	runtimeRoots := append([]string{layout.installedVGRuntimeRoot()}, a.installedSlotRuntimeRoots(layout)...)
+	return a.stopInstalledRuntimeRoots(runtimeRoots)
+}
+
+func (a *app) stopInactiveInstalledRuntimes(layout installLayout, activeProvider string) int {
+	if activeProvider == installedProviderVG {
+		return a.stopInstalledSlots(layout)
+	}
+	return a.stopInstalledRuntimeRoots([]string{layout.installedVGRuntimeRoot()})
+}
+
+func activeProviderName(layout installLayout) (string, error) {
+	state, ok, err := loadInstalledProviderState(layout)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("installed profile not found at %s", layout.installedProviderProfilePath())
+	}
+	return state.ActiveProvider, nil
 }
 
 func (a *app) installedProfileAndSpecs(layout installLayout) (installedProfile, []installedSlotSpec, error) {
