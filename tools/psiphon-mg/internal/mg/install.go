@@ -15,6 +15,13 @@ import (
 
 const installedManifestFilename = "linph-install-manifest.json"
 
+const (
+	installedRestartScheduleDisabled = 0
+	installedRestartScheduleMaxHours = 168
+	installedRestartServiceName      = "linph-periodic-restart.service"
+	installedRestartTimerName        = "linph-periodic-restart.timer"
+)
+
 type installOptions struct {
 	BinaryPath          string
 	BaseConfig          string
@@ -28,6 +35,7 @@ type installOptions struct {
 	ForceUnlockSlotCap  bool
 	Force               bool
 	StartInstalledSlots bool
+	RestartEveryHours   int
 }
 
 type uninstallOptions struct {
@@ -57,6 +65,7 @@ type installManifest struct {
 	PsiphonBinaryPath string   `json:"psiphon_binary_path"`
 	PsiphonConfigPath string   `json:"psiphon_config_path"`
 	ManifestPath      string   `json:"manifest_path"`
+	RestartEveryHours int      `json:"restart_every_hours,omitempty"`
 }
 
 func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Writer) int {
@@ -158,6 +167,20 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 			opt.InstalledRegionsCSV = args[i+1]
 			opt.InstalledProfileSet = true
 			i++
+		case "--restart-every-hours":
+			if i+1 >= len(args) {
+				fmt.Fprintf(stderr, "--restart-every-hours requires a value\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			hours, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "--restart-every-hours must be an integer\n")
+				installUsage(stderr, usageName)
+				return ExitUsage
+			}
+			opt.RestartEveryHours = hours
+			i++
 		case "--fk":
 			opt.ForceUnlockSlotCap = true
 		case "--help", "-h":
@@ -196,6 +219,15 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 	if err := validateInstallBaseConfigSource(opt.BaseConfig); err != nil {
 		fmt.Fprintln(stderr, err)
 		return ExitUsage
+	}
+	if err := validateRestartScheduleHours(opt.RestartEveryHours); err != nil {
+		fmt.Fprintln(stderr, err)
+		return ExitUsage
+	}
+	existingManifest, _, err := readInstallManifest(layout.ManifestPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "failed to read existing install manifest: %v\n", err)
+		return ExitValidationFailed
 	}
 
 	installedProfile, err := resolveInstalledProfile(repoRoot, opt)
@@ -261,7 +293,11 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 			return ExitValidationFailed
 		}
 	}
-	if err := writeInstallManifest(layout); err != nil {
+	if err := configurePeriodicRestart(layout, opt.RestartEveryHours, existingManifest.RestartEveryHours); err != nil {
+		fmt.Fprintf(stderr, "failed to configure periodic restart: %v\n", err)
+		return ExitValidationFailed
+	}
+	if err := writeInstallManifest(layout, opt.RestartEveryHours); err != nil {
 		fmt.Fprintf(stderr, "failed to write install manifest: %v\n", err)
 		return ExitValidationFailed
 	}
@@ -289,6 +325,9 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 	fmt.Fprintf(stdout, "installed config to %s\n", layout.PsiphonConfigPath)
 	if !opt.StartInstalledSlots {
 		fmt.Fprintln(stdout, "configured Psiphon provider; run `linph start` to start installed slots")
+	}
+	if opt.RestartEveryHours > 0 {
+		fmt.Fprintf(stdout, "configured periodic restart every %d hour(s)\n", opt.RestartEveryHours)
 	}
 	fmt.Fprintln(stdout, "installed slot ports:")
 	fmt.Fprintln(stdout, installedPortsCSV(installedSpecs))
@@ -343,6 +382,10 @@ func runUninstall(usageName string, args []string, stdout, stderr io.Writer) int
 		return installedApp.stopInstalledSlots(layout)
 	}); code != 0 {
 		return code
+	}
+	if err := removePeriodicRestart(); err != nil {
+		fmt.Fprintf(stderr, "failed to remove periodic restart: %v\n", err)
+		return ExitValidationFailed
 	}
 
 	for _, path := range append([]string{layout.LinphPath}, layout.CompatPaths...) {
@@ -401,6 +444,7 @@ Options:
 	--installed-http-port N     Starting HTTP port for installed slots.
 	--installed-socks-port N    Starting SOCKS port for installed slots.
 	--installed-regions CSV     Comma-separated regions for installed slots.
+	--restart-every-hours N     Restart linph every N hours to refresh IP (0 disables, max 168).
 	--help                      Show this message.
 `, usageName, filepath.Dir(installedLinphLauncher), installedPsiphonConfigDir)
 }
@@ -518,7 +562,7 @@ func readInstallManifest(path string) (installManifest, bool, error) {
 	return manifest, true, nil
 }
 
-func writeInstallManifest(layout installLayout) error {
+func writeInstallManifest(layout installLayout, restartEveryHours int) error {
 	manifest := installManifest{
 		Version:           1,
 		BinDir:            layout.BinDir,
@@ -528,6 +572,7 @@ func writeInstallManifest(layout installLayout) error {
 		PsiphonBinaryPath: layout.PsiphonBinaryPath,
 		PsiphonConfigPath: layout.PsiphonConfigPath,
 		ManifestPath:      layout.ManifestPath,
+		RestartEveryHours: restartEveryHours,
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -546,6 +591,109 @@ func layoutFromManifest(manifest installManifest) installLayout {
 		PsiphonConfigPath: manifest.PsiphonConfigPath,
 		ManifestPath:      manifest.ManifestPath,
 	}
+}
+
+func validateRestartScheduleHours(hours int) error {
+	if hours < installedRestartScheduleDisabled || hours > installedRestartScheduleMaxHours {
+		return fmt.Errorf("--restart-every-hours must be between 0 and %d", installedRestartScheduleMaxHours)
+	}
+	return nil
+}
+
+func configurePeriodicRestart(layout installLayout, hours, existingHours int) error {
+	if err := validateRestartScheduleHours(hours); err != nil {
+		return err
+	}
+	if hours == installedRestartScheduleDisabled {
+		if existingHours == installedRestartScheduleDisabled {
+			return nil
+		}
+		return removePeriodicRestart()
+	}
+	return writePeriodicRestart(layout, hours)
+}
+
+func writePeriodicRestart(layout installLayout, hours int) error {
+	servicePath := filepath.Join(installedSystemdSystemDir, installedRestartServiceName)
+	timerPath := filepath.Join(installedSystemdSystemDir, installedRestartTimerName)
+	if err := validateSystemdExecPath(layout.LinphPath); err != nil {
+		return err
+	}
+	service := fmt.Sprintf(`[Unit]
+Description=Restart Linphon to refresh IP
+
+[Service]
+Type=oneshot
+ExecStart=%s restart
+`, layout.LinphPath)
+	timer := fmt.Sprintf(`[Unit]
+Description=Restart Linphon every %d hour(s) to refresh IP
+
+[Timer]
+OnActiveSec=%dh
+OnUnitActiveSec=%dh
+Persistent=true
+Unit=%s
+
+[Install]
+WantedBy=timers.target
+`, hours, hours, hours, installedRestartServiceName)
+	if err := copyBytesAtomic([]byte(service), servicePath, 0o644); err != nil {
+		return err
+	}
+	if err := copyBytesAtomic([]byte(timer), timerPath, 0o644); err != nil {
+		return err
+	}
+	return reloadAndEnablePeriodicRestart()
+}
+
+func validateSystemdExecPath(path string) error {
+	if strings.ContainsAny(path, " \t\n\r%") {
+		return fmt.Errorf("install path contains characters unsupported by periodic restart systemd unit: %s", path)
+	}
+	return nil
+}
+
+func reloadAndEnablePeriodicRestart() error {
+	if err := systemctlCommand("daemon-reload"); err != nil {
+		return err
+	}
+	return systemctlCommand("enable", "--now", installedRestartTimerName)
+}
+
+func removePeriodicRestart() error {
+	timerPath := filepath.Join(installedSystemdSystemDir, installedRestartTimerName)
+	servicePath := filepath.Join(installedSystemdSystemDir, installedRestartServiceName)
+	changed := false
+	if _, err := os.Stat(timerPath); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	} else if err := systemctlCommand("disable", "--now", installedRestartTimerName); err != nil {
+		return err
+	} else {
+		changed = true
+	}
+	if _, err := os.Stat(timerPath); err == nil {
+		if err := removePathIfExists(timerPath); err != nil {
+			return err
+		}
+		changed = true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(servicePath); err == nil {
+		if err := removePathIfExists(servicePath); err != nil {
+			return err
+		}
+		changed = true
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if changed {
+		return systemctlCommand("daemon-reload")
+	}
+	return nil
 }
 
 func resolveInstalledProfile(repoRoot string, opt installOptions) (installedProfile, error) {

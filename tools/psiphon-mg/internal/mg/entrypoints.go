@@ -18,8 +18,12 @@ var (
 	installedPsiphonLauncher     = "/usr/local/bin/psiphon"
 	installedPlinstallerLauncher = "/usr/local/bin/plinstaller2"
 	installedPluninstallerPath   = "/usr/local/bin/pluninstaller"
+	installedSystemdSystemDir    = "/etc/systemd/system"
 	legacyInstalledPsiphonPath   = "/usr/bin/psiphon"
 	currentExecutablePath        = os.Executable
+	systemctlCommand             = func(args ...string) error {
+		return exec.Command("systemctl", args...).Run()
+	}
 )
 
 func RunPsiphon(stdout, stderr io.Writer) int {

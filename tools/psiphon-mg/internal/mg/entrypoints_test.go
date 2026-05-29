@@ -259,8 +259,116 @@ func TestRunInstallStartPathStartsInstalledSlots(t *testing.T) {
 	}
 }
 
+func TestRunInstallConfiguresPeriodicRestartTimer(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	installedSystemdSystemDir = filepath.Join(t.TempDir(), "systemd")
+	var systemctlCalls []string
+	systemctlCommand = func(args ...string) error {
+		systemctlCalls = append(systemctlCalls, strings.Join(args, " "))
+		return nil
+	}
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) { return sourceLinph, nil }
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+		"--restart-every-hours", "6",
+	}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("runInstall() exit = %d, stderr = %s", exitCode, stderr.String())
+	}
+	serviceData, err := os.ReadFile(filepath.Join(installedSystemdSystemDir, installedRestartServiceName))
+	if err != nil {
+		t.Fatalf("ReadFile(service): %v", err)
+	}
+	if !strings.Contains(string(serviceData), filepath.Join(binDir, "linph")+" restart") {
+		t.Fatalf("service data = %q, want installed linph restart", string(serviceData))
+	}
+	timerData, err := os.ReadFile(filepath.Join(installedSystemdSystemDir, installedRestartTimerName))
+	if err != nil {
+		t.Fatalf("ReadFile(timer): %v", err)
+	}
+	if !strings.Contains(string(timerData), "OnUnitActiveSec=6h") || !strings.Contains(string(timerData), "Persistent=true") {
+		t.Fatalf("timer data = %q, want 6h persistent timer", string(timerData))
+	}
+	wantCalls := []string{"daemon-reload", "enable --now " + installedRestartTimerName}
+	if strings.Join(systemctlCalls, "|") != strings.Join(wantCalls, "|") {
+		t.Fatalf("systemctl calls = %v, want %v", systemctlCalls, wantCalls)
+	}
+	manifest, ok, err := readInstallManifest(filepath.Join(binDir, installedManifestFilename))
+	if err != nil || !ok {
+		t.Fatalf("read manifest ok=%v err=%v", ok, err)
+	}
+	if manifest.RestartEveryHours != 6 {
+		t.Fatalf("manifest restart hours = %d, want 6", manifest.RestartEveryHours)
+	}
+	if !strings.Contains(stdout.String(), "configured periodic restart every 6 hour(s)") {
+		t.Fatalf("stdout = %q, want periodic restart guidance", stdout.String())
+	}
+}
+
+func TestRunInstallRejectsInvalidPeriodicRestartHours(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	installedSystemdSystemDir = filepath.Join(t.TempDir(), "systemd")
+	systemctlCommand = func(args ...string) error { return nil }
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) { return sourceLinph, nil }
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	args := []string{"--binary", sourceBinary, "--base-config", baseConfig, "--install-bin-dir", binDir, "--install-config-dir", configDir, "--restart-every-hours", "169"}
+	if exitCode := runInstall(repoRoot, "linph install", args, &stdout, &stderr); exitCode != ExitUsage {
+		t.Fatalf("runInstall() exit = %d, want %d", exitCode, ExitUsage)
+	}
+	if !strings.Contains(stderr.String(), "between 0 and 168") {
+		t.Fatalf("stderr = %q, want restart hour validation", stderr.String())
+	}
+}
+
 func TestRunUninstallPreservesConfigByDefault(t *testing.T) {
 	binDir, configDir, _ := installFixture(t)
+	installedSystemdSystemDir = filepath.Join(t.TempDir(), "systemd")
+	if err := os.MkdirAll(installedSystemdSystemDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(systemd): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(installedSystemdSystemDir, installedRestartTimerName), []byte("timer\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(timer): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(installedSystemdSystemDir, installedRestartServiceName), []byte("service\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(service): %v", err)
+	}
+	var systemctlCalls []string
+	systemctlCommand = func(args ...string) error {
+		systemctlCalls = append(systemctlCalls, strings.Join(args, " "))
+		return nil
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -280,6 +388,16 @@ func TestRunUninstallPreservesConfigByDefault(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "preserved") {
 		t.Fatalf("uninstall stdout = %q, want preserved message", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(installedSystemdSystemDir, installedRestartTimerName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected timer to be removed, err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(installedSystemdSystemDir, installedRestartServiceName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected service to be removed, err = %v", err)
+	}
+	wantCalls := []string{"disable --now " + installedRestartTimerName, "daemon-reload"}
+	if strings.Join(systemctlCalls, "|") != strings.Join(wantCalls, "|") {
+		t.Fatalf("systemctl calls = %v, want %v", systemctlCalls, wantCalls)
 	}
 }
 
@@ -577,11 +695,15 @@ func overrideInstallGlobals(t *testing.T) func() {
 	origPsiphonLauncher := installedPsiphonLauncher
 	origPlinstallerLauncher := installedPlinstallerLauncher
 	origPluninstallerPath := installedPluninstallerPath
+	origSystemdSystemDir := installedSystemdSystemDir
+	origSystemctlCommand := systemctlCommand
 	origLegacyPsiphonPath := legacyInstalledPsiphonPath
 	origCurrentExecutablePath := currentExecutablePath
 	origInstalledProcMeminfoPath := installedProcMeminfoPath
 	origInstalledCgroupLimitPaths := append([]string(nil), installedCgroupLimitPaths...)
 	origInstalledReadFile := installedReadFile
+	installedSystemdSystemDir = filepath.Join(t.TempDir(), "systemd")
+	systemctlCommand = func(args ...string) error { return nil }
 
 	return func() {
 		installedPsiphonConfigDir = origConfigDir
@@ -591,6 +713,8 @@ func overrideInstallGlobals(t *testing.T) func() {
 		installedPsiphonLauncher = origPsiphonLauncher
 		installedPlinstallerLauncher = origPlinstallerLauncher
 		installedPluninstallerPath = origPluninstallerPath
+		installedSystemdSystemDir = origSystemdSystemDir
+		systemctlCommand = origSystemctlCommand
 		legacyInstalledPsiphonPath = origLegacyPsiphonPath
 		currentExecutablePath = origCurrentExecutablePath
 		installedProcMeminfoPath = origInstalledProcMeminfoPath
