@@ -14,6 +14,7 @@ const (
 	installedProviderProfileFilename = "linph-profile.json"
 	installedProviderStateVersion    = 1
 	installedProviderPsi             = "psi"
+	installedProviderVG              = "vg"
 )
 
 type installedProviderState struct {
@@ -23,7 +24,8 @@ type installedProviderState struct {
 }
 
 type installedProviderStateSet struct {
-	Psi *installedProfile `json:"psi,omitempty"`
+	Psi *installedProfile   `json:"psi,omitempty"`
+	VG  *installedVGProfile `json:"vg,omitempty"`
 }
 
 func (layout installLayout) installedProviderProfilePath() string {
@@ -103,14 +105,23 @@ func normalizeInstalledProviderState(state *installedProviderState) error {
 			state.ActiveProvider = installedProviderPsi
 		}
 	}
+	if state.Providers.VG != nil {
+		normalizeInstalledVGProfile(state.Providers.VG)
+	}
 	if state.ActiveProvider == "" {
 		return fmt.Errorf("active provider is not set")
 	}
-	if state.ActiveProvider != installedProviderPsi {
-		return fmt.Errorf("unsupported active provider in phase one: %s", state.ActiveProvider)
-	}
-	if state.Providers.Psi == nil {
-		return fmt.Errorf("active provider psi is missing provider state")
+	switch state.ActiveProvider {
+	case installedProviderPsi:
+		if state.Providers.Psi == nil {
+			return fmt.Errorf("active provider psi is missing provider state")
+		}
+	case installedProviderVG:
+		if state.Providers.VG == nil {
+			return fmt.Errorf("active provider vg is missing provider state")
+		}
+	default:
+		return fmt.Errorf("unsupported active provider: %s", state.ActiveProvider)
 	}
 	return nil
 }
@@ -118,6 +129,9 @@ func normalizeInstalledProviderState(state *installedProviderState) error {
 func installedPsiProfileFromState(state installedProviderState) (installedProfile, error) {
 	if err := normalizeInstalledProviderState(&state); err != nil {
 		return installedProfile{}, err
+	}
+	if state.Providers.Psi == nil {
+		return installedProfile{}, fmt.Errorf("provider psi is missing provider state")
 	}
 	return *state.Providers.Psi, nil
 }

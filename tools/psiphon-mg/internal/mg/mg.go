@@ -45,12 +45,14 @@ type options struct {
 }
 
 type activeState struct {
+	Provider            string
 	Region              string
 	PID                 int
 	HTTPPort            int
 	SocksPort           int
 	BinaryPath          string
 	BaseConfig          string
+	ConfigPath          string
 	DataDir             string
 	DownloadIfMissing   bool
 	DownloadURL         string

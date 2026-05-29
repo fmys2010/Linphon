@@ -36,12 +36,14 @@ func writeStateFile(runtimeRoot string, state activeState) error {
 	}
 
 	var builder strings.Builder
+	writeStateLine(&builder, "ACTIVE_PROVIDER", state.Provider)
 	writeStateLine(&builder, "ACTIVE_REGION", state.Region)
 	writeStateLine(&builder, "ACTIVE_PID", strconv.Itoa(state.PID))
 	writeStateLine(&builder, "ACTIVE_HTTP_PORT", strconv.Itoa(state.HTTPPort))
 	writeStateLine(&builder, "ACTIVE_SOCKS_PORT", strconv.Itoa(state.SocksPort))
 	writeStateLine(&builder, "ACTIVE_BINARY_PATH", state.BinaryPath)
 	writeStateLine(&builder, "ACTIVE_BASE_CONFIG", state.BaseConfig)
+	writeStateLine(&builder, "ACTIVE_CONFIG_PATH", state.ConfigPath)
 	writeStateLine(&builder, "ACTIVE_DATA_DIR", state.DataDir)
 	writeStateLine(&builder, "ACTIVE_DOWNLOAD_IF_MISSING", boolString(state.DownloadIfMissing))
 	writeStateLine(&builder, "ACTIVE_DOWNLOAD_URL", state.DownloadURL)
@@ -92,6 +94,8 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 		key := parts[0]
 		value := parseStateValue(parts[1])
 		switch key {
+		case "ACTIVE_PROVIDER":
+			state.Provider = value
 		case "ACTIVE_REGION":
 			state.Region = value
 		case "ACTIVE_PID":
@@ -122,6 +126,8 @@ func (a *app) loadState(runtimeRoot string) (activeState, managerState) {
 			state.BinaryPath = value
 		case "ACTIVE_BASE_CONFIG":
 			state.BaseConfig = value
+		case "ACTIVE_CONFIG_PATH":
+			state.ConfigPath = value
 		case "ACTIVE_DATA_DIR":
 			state.DataDir = value
 		case "ACTIVE_DOWNLOAD_IF_MISSING":
