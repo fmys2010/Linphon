@@ -240,7 +240,7 @@ run_go_auto_install() {
 
   case "$manager" in
     apt-get)
-      run_privileged_command apt-get update && run_privileged_command apt-get install -y "$package"
+      run_privileged_command env DEBIAN_FRONTEND=noninteractive apt-get update && run_privileged_command env DEBIAN_FRONTEND=noninteractive apt-get install -yq "$package"
       ;;
     dnf)
       run_privileged_command dnf install -y "$package"
@@ -266,13 +266,14 @@ run_go_auto_install() {
 preflight_build_dependencies() {
   local allow_auto_install="${1:-0}"
   local require_privileged_install="${2:-1}"
+  local prompt_auto_install="${3:-1}"
   local reply=""
   local manager=""
   local package=""
   local install_command=""
 
   if ! command_exists go; then
-    if [[ "$allow_auto_install" -eq 1 && -t 0 && -t 1 ]]; then
+    if [[ "$allow_auto_install" -eq 1 ]]; then
       if ! can_run_privileged_command; then
         lang_eprintf \
           'Go is required to build linph, and automatic installation needs root or sudo. Please install Go manually and rerun.\n' \
@@ -282,10 +283,18 @@ preflight_build_dependencies() {
 
       if manager="$(detect_go_package_manager 2>/dev/null)" && package="$(go_package_name_for_manager "$manager" 2>/dev/null)"; then
         install_command="$(describe_go_install_command "$manager" "$package")"
-        read_lang_prompt reply \
-          'Go is required to build linph. Install it now with `%s`? [Y/n] ' \
-          '构建 linph 需要 go。是否现在用 `%s` 自动安装？[Y/n] ' \
-          "$install_command"
+        if [[ "$prompt_auto_install" -eq 1 && -t 0 && -t 1 ]]; then
+          read_lang_prompt reply \
+            'Go is required to build linph. Install it now with `%s`? [Y/n] ' \
+            '构建 linph 需要 go。是否现在用 `%s` 自动安装？[Y/n] ' \
+            "$install_command"
+        else
+          reply="yes"
+          lang_printf \
+            'Go is required to build linph; installing it with `%s`.\n' \
+            '构建 linph 需要 go；现在使用 `%s` 自动安装。\n' \
+            "$install_command"
+        fi
         case "$reply" in
           ""|y|Y|yes|YES|Yes)
             if ! run_go_auto_install "$manager" "$package"; then
@@ -879,6 +888,9 @@ Default behavior bootstraps only the linph command. It builds linph from this
 checkout, installs it into the selected bin directory, and prints the next step:
   linph install
 
+If Go is missing, the bootstrap path attempts to install the distro Go package
+first, for example golang-go on Debian/Ubuntu apt systems.
+
 Options:
   --install-bin-dir PATH      Install linph here (default: /usr/local/bin).
   --legacy-full-install       Run the previous full interactive/system install flow.
@@ -918,9 +930,9 @@ install_linph_bootstrap() {
   done
 
   if path_requires_privilege "$install_bin_dir"; then
-    preflight_build_dependencies 0 1
+    preflight_build_dependencies 1 1 0
   else
-    preflight_build_dependencies 0 0
+    preflight_build_dependencies 1 0 0
   fi
   build_linph
   run_path_command "$install_bin_dir" mkdir -p "$install_bin_dir"

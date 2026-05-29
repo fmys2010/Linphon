@@ -115,6 +115,9 @@ func TestInstallScriptHelpDocumentsBootstrapDefault(t *testing.T) {
 	if !strings.Contains(stdout.String(), "--legacy-full-install") {
 		t.Fatalf("install.sh --help stdout = %q, want legacy fallback guidance", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "golang-go on Debian/Ubuntu") {
+		t.Fatalf("install.sh --help stdout = %q, want Go dependency guidance", stdout.String())
+	}
 }
 
 func TestInstallScriptLegacyHelpRoutesToInstallHelp(t *testing.T) {
