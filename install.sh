@@ -952,6 +952,19 @@ run_install() {
   exec env PSIPHON_MG_REPO_ROOT="$REPO_ROOT" "$LINPH_BIN" install "${install_args[@]}"
 }
 
+run_legacy_install() {
+  local -a install_args=("$@")
+
+  install_args+=(--start)
+
+  if [[ "$(id -u)" -ne 0 ]]; then
+    ensure_command sudo
+    exec sudo env PSIPHON_MG_REPO_ROOT="$REPO_ROOT" "$LINPH_BIN" install "${install_args[@]}"
+  fi
+
+  exec env PSIPHON_MG_REPO_ROOT="$REPO_ROOT" "$LINPH_BIN" install "${install_args[@]}"
+}
+
 print_slot_plan_summary() {
   local line=""
   for line in "${DERIVED_SLOT_LINES[@]}"; do
@@ -1060,7 +1073,7 @@ run_interactive_install() {
   if (( FORCE_INSTALL_FLAG != 0 )); then
     install_args+=(--force)
   fi
-  run_install "${install_args[@]}"
+  run_legacy_install "${install_args[@]}"
 }
 
 run_install_help() {
@@ -1104,7 +1117,7 @@ main() {
 
     preflight_build_dependencies 0 1
     build_linph
-    run_install "$@"
+    run_legacy_install "$@"
     return 0
   fi
 

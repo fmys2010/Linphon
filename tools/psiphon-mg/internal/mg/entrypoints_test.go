@@ -117,19 +117,32 @@ func TestInstallScriptHelpDocumentsBootstrapDefault(t *testing.T) {
 	}
 }
 
+func TestInstallScriptLegacyHelpRoutesToInstallHelp(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(repoRoot, "install.sh"), "--legacy-full-install", "--help")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("install.sh --legacy-full-install --help: %v (stderr=%s)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "--start") {
+		t.Fatalf("legacy install help stdout = %q, want --start documentation", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("legacy install help stdout = %q, want install usage", stdout.String())
+	}
+}
+
 func TestInstallScriptBootstrapsLinphByDefault(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 	binDir := filepath.Join(t.TempDir(), "bin")
-	fakeTools := t.TempDir()
-	if err := os.WriteFile(filepath.Join(fakeTools, "sudo"), []byte("#!/bin/sh\nexec \"$@\"\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile(fake sudo): %v", err)
-	}
 	cmd := exec.Command("bash", filepath.Join(repoRoot, "install.sh"), "--install-bin-dir", binDir)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.Env = append(os.Environ(), "PATH="+fakeTools+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("install.sh bootstrap: %v (stderr=%s)", err, stderr.String())
 	}
@@ -141,6 +154,75 @@ func TestInstallScriptBootstrapsLinphByDefault(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "next step: linph install") {
 		t.Fatalf("install.sh bootstrap stdout = %q, want next-step guidance", stdout.String())
+	}
+}
+
+func TestRunInstallStartPathStartsInstalledSlots(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	t.Setenv("FAKE_PSIPHON_AUTO_EXIT_DELAY_MS", "1500")
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) { return sourceLinph, nil }
+
+	layout := buildInstallLayout(binDir, configDir)
+	installedLinphLauncher = layout.LinphPath
+	installedPsiphonLauncher = filepath.Join(binDir, "psiphon")
+	installedPlinstallerLauncher = filepath.Join(binDir, "plinstaller2")
+	installedPluninstallerPath = filepath.Join(binDir, "pluninstaller")
+	installedPsiphonConfigDir = configDir
+	installedPsiphonBinaryPath = layout.PsiphonBinaryPath
+	installedPsiphonConfigPath = layout.PsiphonConfigPath
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	installArgs := []string{"--binary", sourceBinary, "--base-config", baseConfig, "--install-bin-dir", binDir, "--install-config-dir", configDir, "--installed-slot-count", "1", "--installed-http-port", "18080", "--installed-socks-port", "18080", "--installed-regions", "US", "--start"}
+	if exitCode := runInstall(repoRoot, "linph install", installArgs, &stdout, &stderr); exitCode != 0 {
+		t.Fatalf("runInstall(--start) exit = %d, stderr=%s", exitCode, stderr.String())
+	}
+
+	state, ok, err := loadInstalledProviderState(layout)
+	if err != nil {
+		t.Fatalf("loadInstalledProviderState() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected installed provider state at %s", layout.installedProviderProfilePath())
+	}
+	profile, err := installedPsiProfileFromState(state)
+	if err != nil {
+		t.Fatalf("installedPsiProfileFromState() error = %v", err)
+	}
+	if got, want := profile.SlotCount, 1; got != want {
+		t.Fatalf("profile slot count = %d, want %d", got, want)
+	}
+	app := &app{}
+	specs, err := deriveInstalledSlotSpecs(layout, profile)
+	if err != nil {
+		t.Fatalf("deriveInstalledSlotSpecs() error = %v", err)
+	}
+	for _, spec := range specs {
+		loadedState, stateKind := app.loadState(spec.RuntimeRoot)
+		if stateKind != stateRunning {
+			t.Fatalf("expected %s to be running after install --start, got %s", spec.RuntimeRoot, stateKind)
+		}
+		if loadedState.Region != "US" || loadedState.HTTPPort != 18080 || loadedState.SocksPort != 18081 {
+			t.Fatalf("unexpected running slot state: %#v", loadedState)
+		}
+	}
+
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if exitCode := RunLinph([]string{"stop"}, &stopStdout, &stopStderr); exitCode != 0 {
+		t.Fatalf("RunLinph(stop) exit = %d, stderr = %s", exitCode, stopStderr.String())
 	}
 }
 
