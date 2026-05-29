@@ -160,6 +160,36 @@ func TestInstallScriptBootstrapsLinphByDefault(t *testing.T) {
 	}
 }
 
+func TestInstallScriptBootstrapsFromProcessSubstitution(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	archivePath := filepath.Join(t.TempDir(), "linphon.tar.gz")
+	archiveCmd := exec.Command("git", "archive", "--format=tar.gz", "--prefix", "Linphon-main/", "--output", archivePath, "HEAD")
+	archiveCmd.Dir = repoRoot
+	var archiveStderr bytes.Buffer
+	archiveCmd.Stderr = &archiveStderr
+	if err := archiveCmd.Run(); err != nil {
+		t.Fatalf("git archive: %v (stderr=%s)", err, archiveStderr.String())
+	}
+
+	cmd := exec.Command("bash", "-c", "bash <(cat install.sh) --install-bin-dir \"$1\"", "bash", binDir)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "LINPHON_BOOTSTRAP_ARCHIVE_URL=file://"+archivePath)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("install.sh process substitution bootstrap: %v (stdout=%s stderr=%s)", err, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(binDir, "linph")); err != nil {
+		t.Fatalf("expected process substitution bootstrap linph at %s: %v", filepath.Join(binDir, "linph"), err)
+	}
+	if !strings.Contains(stderr.String(), "fetching Linphon source archive") {
+		t.Fatalf("process substitution stderr = %q, want source archive fetch guidance", stderr.String())
+	}
+}
+
 func TestRunInstallStartPathStartsInstalledSlots(t *testing.T) {
 	restore := overrideInstallGlobals(t)
 	defer restore()

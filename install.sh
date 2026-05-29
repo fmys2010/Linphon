@@ -1,7 +1,52 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOOTSTRAP_SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOOTSTRAP_TEMP_ROOT=""
+LINPHON_BOOTSTRAP_ARCHIVE_URL="${LINPHON_BOOTSTRAP_ARCHIVE_URL:-https://github.com/fmys2010/Linphon/archive/refs/heads/main.tar.gz}"
+
+bootstrap_repo_root() {
+  local candidate="$1"
+  local temp_root=""
+
+  if [[ -f "$candidate/tools/psiphon-mg/go.mod" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    printf 'curl is required to bootstrap Linphon from a remote script\n' >&2
+    return 1
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    printf 'tar is required to bootstrap Linphon from a remote script\n' >&2
+    return 1
+  fi
+
+  temp_root="$(mktemp -d "${TMPDIR:-/tmp}/linphon-bootstrap.XXXXXX")"
+  BOOTSTRAP_TEMP_ROOT="$temp_root"
+  printf 'downloaded install.sh without repository sources; fetching Linphon source archive\n' >&2
+  if ! curl -fsSL "$LINPHON_BOOTSTRAP_ARCHIVE_URL" | tar -xz -C "$temp_root" --strip-components=1; then
+    rm -rf "$temp_root"
+    BOOTSTRAP_TEMP_ROOT=""
+    return 1
+  fi
+  if [[ ! -f "$temp_root/tools/psiphon-mg/go.mod" ]]; then
+    printf 'downloaded Linphon source archive is missing tools/psiphon-mg/go.mod\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$temp_root"
+}
+
+cleanup_bootstrap_temp_root() {
+  if [[ -n "$BOOTSTRAP_TEMP_ROOT" ]]; then
+    rm -rf "$BOOTSTRAP_TEMP_ROOT"
+  fi
+}
+
+trap cleanup_bootstrap_temp_root EXIT
+
+REPO_ROOT="$(bootstrap_repo_root "$BOOTSTRAP_SOURCE_ROOT")"
 LINPH_BIN="$REPO_ROOT/tools/psiphon-mg/bin/linph"
 DEFAULT_BASE_CONFIG="$REPO_ROOT/psiphon.config"
 DEFAULT_INSTALL_BIN_DIR="/usr/local/bin"
