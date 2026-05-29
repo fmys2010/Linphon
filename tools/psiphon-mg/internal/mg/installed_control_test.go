@@ -2,6 +2,7 @@ package mg
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,12 +79,19 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 	layout := buildInstallLayout(binDir, configDir)
 	currentExecutablePath = func() (string, error) { return layout.LinphPath, nil }
 
-	profile, ok, err := readInstalledProfile(layout.installedProfilePath())
+	state, ok, err := loadInstalledProviderState(layout)
 	if err != nil {
-		t.Fatalf("readInstalledProfile() error = %v", err)
+		t.Fatalf("loadInstalledProviderState() error = %v", err)
 	}
 	if !ok {
-		t.Fatalf("expected installed profile at %s", layout.installedProfilePath())
+		t.Fatalf("expected installed provider state at %s", layout.installedProviderProfilePath())
+	}
+	profile, err := installedPsiProfileFromState(state)
+	if err != nil {
+		t.Fatalf("installedPsiProfileFromState() error = %v", err)
+	}
+	if state.ActiveProvider != installedProviderPsi {
+		t.Fatalf("expected active provider psi, got %q", state.ActiveProvider)
 	}
 	if profile.SlotCount != 3 {
 		t.Fatalf("profile slot count = %d, want 3", profile.SlotCount)
@@ -97,11 +105,24 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deriveInstalledSlotSpecs() error = %v", err)
 	}
+	for _, spec := range specs {
+		_, stateKind := app.loadState(spec.RuntimeRoot)
+		if stateKind != stateNone {
+			t.Fatalf("expected %s to be stopped after install, got %s", spec.RuntimeRoot, stateKind)
+		}
+	}
+
+	var startStdout bytes.Buffer
+	var startStderr bytes.Buffer
+	if exitCode := RunLinph([]string{"start"}, &startStdout, &startStderr); exitCode != 0 {
+		t.Fatalf("RunLinph(start) exit = %d, stderr = %s", exitCode, startStderr.String())
+	}
+
 	initialPIDs := map[string]int{}
 	for _, spec := range specs {
 		state, stateKind := app.loadState(spec.RuntimeRoot)
 		if stateKind != stateRunning {
-			t.Fatalf("expected %s to be running, got %s", spec.RuntimeRoot, stateKind)
+			t.Fatalf("expected %s to be running after start, got %s", spec.RuntimeRoot, stateKind)
 		}
 		if state.Region != spec.Region || state.HTTPPort != spec.HTTPPort || state.SocksPort != spec.SocksPort {
 			t.Fatalf("unexpected state for slot %d: %#v", spec.Index+1, state)
@@ -195,6 +216,30 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 		}
 	}
 
+	var psiSetStdout bytes.Buffer
+	var psiSetStderr bytes.Buffer
+	if exitCode := RunLinph([]string{"psi", "set", "psiphon", "--slot-count", "2", "--regions", "US,CA", "--activate"}, &psiSetStdout, &psiSetStderr); exitCode != 0 {
+		t.Fatalf("RunLinph(psi set psiphon) exit = %d, stderr = %s", exitCode, psiSetStderr.String())
+	}
+	if !strings.Contains(psiSetStdout.String(), "slot-002 region=CA") {
+		t.Fatalf("psi set output = %q, want updated slot plan", psiSetStdout.String())
+	}
+
+	psiProfile, ok, err := readInstalledProfile(layout.installedProfilePath())
+	if err != nil || !ok {
+		t.Fatalf("readInstalledProfile after psi set: ok=%v err=%v", ok, err)
+	}
+	if psiProfile.SlotCount != 2 {
+		t.Fatalf("psi set slot count = %d, want 2", psiProfile.SlotCount)
+	}
+	if got, want := strings.Join(psiProfile.Regions, ","), "US,CA"; got != want {
+		t.Fatalf("psi set regions = %s, want %s", got, want)
+	}
+	finalSpecs, err = deriveInstalledSlotSpecs(layout, psiProfile)
+	if err != nil {
+		t.Fatalf("deriveInstalledSlotSpecs after psi set: %v", err)
+	}
+
 	var stopStdout bytes.Buffer
 	var stopStderr bytes.Buffer
 	if exitCode := RunLinph([]string{"stop"}, &stopStdout, &stopStderr); exitCode != 0 {
@@ -224,6 +269,55 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 
 	if !strings.Contains(installStdout.String(), "slot-001 region=US http=18080 socks=18081") {
 		t.Fatalf("install stdout missing configured port pairs: %s", installStdout.String())
+	}
+}
+
+func TestInstalledProviderStateMigratesLegacyProfile(t *testing.T) {
+	layout := buildInstallLayout(filepath.Join(t.TempDir(), "bin"), filepath.Join(t.TempDir(), "etc", "psiphon"))
+	legacyProfile := installedProfile{
+		Version:       installedProfileVersion,
+		SlotCount:     2,
+		HTTPPortBase:  18080,
+		SocksPortBase: 18080,
+		Regions:       []string{"US", "CA"},
+	}
+	if err := os.MkdirAll(filepath.Dir(layout.installedProfilePath()), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(layout.installedProfilePath()), err)
+	}
+	legacyData, err := json.MarshalIndent(legacyProfile, "", "  ")
+	if err != nil {
+		t.Fatalf("json.MarshalIndent(): %v", err)
+	}
+	if err := os.WriteFile(layout.installedProfilePath(), append(legacyData, '\n'), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", layout.installedProfilePath(), err)
+	}
+
+	state, ok, err := loadInstalledProviderState(layout)
+	if err != nil {
+		t.Fatalf("loadInstalledProviderState() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected migrated provider state at %s", layout.installedProviderProfilePath())
+	}
+	if state.ActiveProvider != installedProviderPsi {
+		t.Fatalf("active provider = %q, want %q", state.ActiveProvider, installedProviderPsi)
+	}
+	profile, err := installedPsiProfileFromState(state)
+	if err != nil {
+		t.Fatalf("installedPsiProfileFromState() error = %v", err)
+	}
+	if got, want := strings.Join(profile.Regions, ","), "US,CA"; got != want {
+		t.Fatalf("profile regions = %s, want %s", got, want)
+	}
+	if _, err := os.Stat(layout.installedProviderProfilePath()); err != nil {
+		t.Fatalf("expected canonical provider state at %s: %v", layout.installedProviderProfilePath(), err)
+	}
+	backups, err := filepath.Glob(layout.installedProfilePath() + ".legacy-backup-*")
+	if err != nil {
+		t.Fatalf("filepath.Glob(): %v", err)
+	}
+	if len(backups) == 0 {
+		t.Fatalf("expected legacy backup to be written for migrated profile")
 	}
 }
 

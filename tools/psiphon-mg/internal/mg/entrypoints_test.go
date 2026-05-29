@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,6 +96,51 @@ func TestRunInstallAndRunPsiphonViaManifest(t *testing.T) {
 	var runStderr bytes.Buffer
 	if exitCode := RunLinphAlias("psiphon", nil, &runStdout, &runStderr); exitCode != 0 {
 		t.Fatalf("RunLinphAlias(psiphon) exit = %d, stderr = %s", exitCode, runStderr.String())
+	}
+}
+
+func TestInstallScriptHelpDocumentsBootstrapDefault(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	cmd := exec.Command("bash", filepath.Join(repoRoot, "install.sh"), "--help")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("install.sh --help: %v (stderr=%s)", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Default behavior bootstraps only the linph command") {
+		t.Fatalf("install.sh --help stdout = %q, want bootstrap guidance", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--legacy-full-install") {
+		t.Fatalf("install.sh --help stdout = %q, want legacy fallback guidance", stdout.String())
+	}
+}
+
+func TestInstallScriptBootstrapsLinphByDefault(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	fakeTools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeTools, "sudo"), []byte("#!/bin/sh\nexec \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake sudo): %v", err)
+	}
+	cmd := exec.Command("bash", filepath.Join(repoRoot, "install.sh"), "--install-bin-dir", binDir)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.Env = append(os.Environ(), "PATH="+fakeTools+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("install.sh bootstrap: %v (stderr=%s)", err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(binDir, "linph")); err != nil {
+		t.Fatalf("expected bootstrap linph at %s: %v", filepath.Join(binDir, "linph"), err)
+	}
+	if _, err := os.Stat(filepath.Join(binDir, "linph-install-manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no install manifest in bootstrap mode, err=%v", err)
+	}
+	if !strings.Contains(stdout.String(), "next step: linph install") {
+		t.Fatalf("install.sh bootstrap stdout = %q, want next-step guidance", stdout.String())
 	}
 }
 
