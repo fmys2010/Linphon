@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func (a *linphApp) runProviderCommand(args []string) int {
+func (a *app) runProviderCommand(args []string) int {
 	if len(args) == 0 {
 		providerUsage(a.stderr)
 		return ExitUsage
@@ -19,19 +19,7 @@ func (a *linphApp) runProviderCommand(args []string) int {
 			providerUsage(a.stderr)
 			return ExitUsage
 		}
-		state, ok, err := loadInstalledProviderState(layout)
-		if err != nil {
-			fmt.Fprintf(a.stderr, "%v\n", err)
-			return ExitUsage
-		}
-		if !ok {
-			fmt.Fprintln(a.stderr, "provider state not found; run linph install first")
-			return ExitUsage
-		}
-		fmt.Fprintln(a.stdout, state.ActiveProvider)
-		return 0
-	case "set":
-		if len(args) == 2 && isPsiProviderName(args[1]) {
+		return a.withInstalledLock(layout, func() int {
 			state, ok, err := loadInstalledProviderState(layout)
 			if err != nil {
 				fmt.Fprintf(a.stderr, "%v\n", err)
@@ -41,13 +29,29 @@ func (a *linphApp) runProviderCommand(args []string) int {
 				fmt.Fprintln(a.stderr, "provider state not found; run linph install first")
 				return ExitUsage
 			}
-			state.ActiveProvider = installedProviderPsi
-			if err := writeInstalledProviderState(layout, state); err != nil {
-				fmt.Fprintf(a.stderr, "failed to persist provider state: %v\n", err)
-				return ExitUsage
-			}
-			fmt.Fprintln(a.stdout, installedProviderPsi)
+			fmt.Fprintln(a.stdout, state.ActiveProvider)
 			return 0
+		})
+	case "set":
+		if len(args) == 2 && isPsiProviderName(args[1]) {
+			return a.withInstalledLock(layout, func() int {
+				state, ok, err := loadInstalledProviderState(layout)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "%v\n", err)
+					return ExitUsage
+				}
+				if !ok {
+					fmt.Fprintln(a.stderr, "provider state not found; run linph install first")
+					return ExitUsage
+				}
+				state.ActiveProvider = installedProviderPsi
+				if err := writeInstalledProviderState(layout, state); err != nil {
+					fmt.Fprintf(a.stderr, "failed to persist provider state: %v\n", err)
+					return ExitUsage
+				}
+				fmt.Fprintln(a.stdout, installedProviderPsi)
+				return 0
+			})
 		}
 		if len(args) != 2 {
 			providerUsage(a.stderr)
@@ -64,7 +68,7 @@ func (a *linphApp) runProviderCommand(args []string) int {
 	}
 }
 
-func (a *linphApp) runPsiCommand(args []string) int {
+func (a *app) runPsiCommand(args []string) int {
 	if len(args) == 0 {
 		psiUsage(a.stderr)
 		return ExitUsage
@@ -81,108 +85,110 @@ func (a *linphApp) runPsiCommand(args []string) int {
 	}
 }
 
-func (a *linphApp) runPsiSet(args []string) int {
+func (a *app) runPsiSet(args []string) int {
 	if len(args) > 0 && isPsiProviderName(args[0]) {
 		args = args[1:]
 	}
 	layout := activeInstallLayout()
-	state, ok, err := loadInstalledProviderState(layout)
-	if err != nil {
-		fmt.Fprintf(a.stderr, "%v\n", err)
-		return ExitUsage
-	}
-	if !ok {
-		fmt.Fprintln(a.stderr, "provider state not found; run linph install first")
-		return ExitUsage
-	}
-	profile, err := installedPsiProfileFromState(state)
-	if err != nil {
-		fmt.Fprintf(a.stderr, "%v\n", err)
-		return ExitUsage
-	}
-
-	activate := false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--slot-count":
-			value, ok := psiSetValue(args, &i, a.stderr, "--slot-count")
-			if !ok {
-				return ExitUsage
-			}
-			count, err := strconv.Atoi(value)
-			if err != nil || count < 1 || count > installedSlotCountHardLimit {
-				fmt.Fprintf(a.stderr, "--slot-count must be between 1 and %d\n", installedSlotCountHardLimit)
-				return ExitUsage
-			}
-			profile.SlotCount = count
-		case "--http-port":
-			value, ok := psiSetValue(args, &i, a.stderr, "--http-port")
-			if !ok {
-				return ExitUsage
-			}
-			port, err := parseInstalledPort(value)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "%v\n", err)
-				return ExitUsage
-			}
-			profile.HTTPPortBase = port
-		case "--socks-port":
-			value, ok := psiSetValue(args, &i, a.stderr, "--socks-port")
-			if !ok {
-				return ExitUsage
-			}
-			port, err := parseInstalledPort(value)
-			if err != nil {
-				fmt.Fprintf(a.stderr, "%v\n", err)
-				return ExitUsage
-			}
-			profile.SocksPortBase = port
-		case "--regions":
-			value, ok := psiSetValue(args, &i, a.stderr, "--regions")
-			if !ok {
-				return ExitUsage
-			}
-			regions := normalizeInstalledRegions(value)
-			if len(regions) < profile.SlotCount {
-				fmt.Fprintf(a.stderr, "need at least %d region(s) for %d slot(s)\n", profile.SlotCount, profile.SlotCount)
-				return ExitUsage
-			}
-			if err := validateInstalledRegions(a.repoRoot, regions[:profile.SlotCount]); err != nil {
-				fmt.Fprintf(a.stderr, "%v\n", err)
-				return ExitUsage
-			}
-			profile.Regions = append([]string(nil), regions[:profile.SlotCount]...)
-		case "--activate":
-			activate = true
-		case "--help", "-h", "help":
-			psiSetUsage(a.stdout)
-			return 0
-		default:
-			fmt.Fprintf(a.stderr, "unknown psi set option: %s\n", args[i])
-			psiSetUsage(a.stderr)
+	return a.withInstalledLock(layout, func() int {
+		state, ok, err := loadInstalledProviderState(layout)
+		if err != nil {
+			fmt.Fprintf(a.stderr, "%v\n", err)
 			return ExitUsage
 		}
-	}
-	if len(profile.Regions) < profile.SlotCount {
-		fmt.Fprintf(a.stderr, "need at least %d region(s) for %d slot(s)\n", profile.SlotCount, profile.SlotCount)
-		return ExitUsage
-	}
-	if _, err := deriveInstalledSlotSpecs(layout, profile); err != nil {
-		fmt.Fprintf(a.stderr, "%v\n", err)
-		return ExitUsage
-	}
-	state.Providers.Psi = &profile
-	if activate || state.ActiveProvider == "" {
-		state.ActiveProvider = installedProviderPsi
-	}
-	if err := writeInstalledProviderState(layout, state); err != nil {
-		fmt.Fprintf(a.stderr, "failed to persist provider state: %v\n", err)
-		return ExitUsage
-	}
-	if specs, err := deriveInstalledSlotSpecs(layout, profile); err == nil {
-		fmt.Fprintln(a.stdout, installedPortsCSV(specs))
-	}
-	return 0
+		if !ok {
+			fmt.Fprintln(a.stderr, "provider state not found; run linph install first")
+			return ExitUsage
+		}
+		profile, err := installedPsiProfileFromState(state)
+		if err != nil {
+			fmt.Fprintf(a.stderr, "%v\n", err)
+			return ExitUsage
+		}
+
+		activate := false
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "--slot-count":
+				value, ok := psiSetValue(args, &i, a.stderr, "--slot-count")
+				if !ok {
+					return ExitUsage
+				}
+				count, err := strconv.Atoi(value)
+				if err != nil || count < 1 || count > installedSlotCountHardLimit {
+					fmt.Fprintf(a.stderr, "--slot-count must be between 1 and %d\n", installedSlotCountHardLimit)
+					return ExitUsage
+				}
+				profile.SlotCount = count
+			case "--http-port":
+				value, ok := psiSetValue(args, &i, a.stderr, "--http-port")
+				if !ok {
+					return ExitUsage
+				}
+				port, err := parseInstalledPort(value)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "%v\n", err)
+					return ExitUsage
+				}
+				profile.HTTPPortBase = port
+			case "--socks-port":
+				value, ok := psiSetValue(args, &i, a.stderr, "--socks-port")
+				if !ok {
+					return ExitUsage
+				}
+				port, err := parseInstalledPort(value)
+				if err != nil {
+					fmt.Fprintf(a.stderr, "%v\n", err)
+					return ExitUsage
+				}
+				profile.SocksPortBase = port
+			case "--regions":
+				value, ok := psiSetValue(args, &i, a.stderr, "--regions")
+				if !ok {
+					return ExitUsage
+				}
+				regions := normalizeInstalledRegions(value)
+				if len(regions) < profile.SlotCount {
+					fmt.Fprintf(a.stderr, "need at least %d region(s) for %d slot(s)\n", profile.SlotCount, profile.SlotCount)
+					return ExitUsage
+				}
+				if err := validateInstalledRegions(a.repoRoot, regions[:profile.SlotCount]); err != nil {
+					fmt.Fprintf(a.stderr, "%v\n", err)
+					return ExitUsage
+				}
+				profile.Regions = append([]string(nil), regions[:profile.SlotCount]...)
+			case "--activate":
+				activate = true
+			case "--help", "-h", "help":
+				psiSetUsage(a.stdout)
+				return 0
+			default:
+				fmt.Fprintf(a.stderr, "unknown psi set option: %s\n", args[i])
+				psiSetUsage(a.stderr)
+				return ExitUsage
+			}
+		}
+		if len(profile.Regions) < profile.SlotCount {
+			fmt.Fprintf(a.stderr, "need at least %d region(s) for %d slot(s)\n", profile.SlotCount, profile.SlotCount)
+			return ExitUsage
+		}
+		if _, err := deriveInstalledSlotSpecs(layout, profile); err != nil {
+			fmt.Fprintf(a.stderr, "%v\n", err)
+			return ExitUsage
+		}
+		state.Providers.Psi = &profile
+		if activate || state.ActiveProvider == "" {
+			state.ActiveProvider = installedProviderPsi
+		}
+		if err := writeInstalledProviderState(layout, state); err != nil {
+			fmt.Fprintf(a.stderr, "failed to persist provider state: %v\n", err)
+			return ExitUsage
+		}
+		if specs, err := deriveInstalledSlotSpecs(layout, profile); err == nil {
+			fmt.Fprintln(a.stdout, installedPortsCSV(specs))
+		}
+		return 0
+	})
 }
 
 func psiSetValue(args []string, index *int, stderr io.Writer, flag string) (string, bool) {

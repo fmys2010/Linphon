@@ -53,19 +53,25 @@ func (a *app) runInstalledControlCommand(command string, args []string) int {
 			a.installedUsage(a.stderr)
 			return ExitUsage
 		}
-		return a.commandInstalledPort(layout)
+		return a.withInstalledLock(layout, func() int {
+			return a.commandInstalledPort(layout)
+		})
 	case "ctry":
 		if len(args) != 0 {
 			a.installedUsage(a.stderr)
 			return ExitUsage
 		}
-		return a.commandInstalledCtry(layout)
+		return a.withInstalledLock(layout, func() int {
+			return a.commandInstalledCtry(layout)
+		})
 	case "log":
 		if len(args) != 0 {
 			a.installedUsage(a.stderr)
 			return ExitUsage
 		}
-		return a.commandInstalledLog(layout)
+		return a.withInstalledLock(layout, func() int {
+			return a.commandInstalledLog(layout)
+		})
 	case "switch-port":
 		return a.withInstalledLock(layout, func() int {
 			return a.commandInstalledSwitchPort(layout, args)
@@ -131,6 +137,10 @@ func (a *app) commandInstalledRestart(layout installLayout) int {
 }
 
 func (a *app) commandInstalledStop(layout installLayout) int {
+	if _, _, err := a.installedProfileAndSpecs(layout); err != nil {
+		a.err("%v", err)
+		return ExitUsage
+	}
 	return a.stopInstalledSlots(layout)
 }
 

@@ -272,6 +272,140 @@ func TestInstalledLifecycleWithFakeBinary(t *testing.T) {
 	}
 }
 
+func TestInstalledStopFailsBeforeSideEffectsOnUnsupportedActiveProvider(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) { return sourceLinph, nil }
+
+	var installStdout bytes.Buffer
+	var installStderr bytes.Buffer
+	if exitCode := runInstall(repoRoot, "linph install", []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}, &installStdout, &installStderr); exitCode != 0 {
+		t.Fatalf("runInstall() exit = %d, stderr = %s", exitCode, installStderr.String())
+	}
+
+	layout := buildInstallLayout(binDir, configDir)
+	installedLinphLauncher = layout.LinphPath
+	installedPsiphonLauncher = filepath.Join(binDir, "psiphon")
+	installedPlinstallerLauncher = filepath.Join(binDir, "plinstaller2")
+	installedPluninstallerPath = filepath.Join(binDir, "pluninstaller")
+	legacyInstalledPsiphonPath = filepath.Join(t.TempDir(), "legacy", "psiphon")
+	installedPsiphonConfigDir = configDir
+	installedPsiphonBinaryPath = layout.PsiphonBinaryPath
+	installedPsiphonConfigPath = layout.PsiphonConfigPath
+	currentExecutablePath = func() (string, error) { return layout.LinphPath, nil }
+	state, ok, err := loadInstalledProviderState(layout)
+	if err != nil || !ok {
+		t.Fatalf("loadInstalledProviderState() ok=%v err=%v", ok, err)
+	}
+	state.ActiveProvider = "unsupported-provider"
+	rawState, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("json.MarshalIndent() error = %v", err)
+	}
+	if err := os.WriteFile(layout.installedProviderProfilePath(), append(rawState, '\n'), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", layout.installedProviderProfilePath(), err)
+	}
+
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if exitCode := RunLinph([]string{"stop"}, &stopStdout, &stopStderr); exitCode == 0 {
+		t.Fatalf("RunLinph(stop) exit = %d, want failure", exitCode)
+	}
+	if !strings.Contains(stopStderr.String(), "unsupported") {
+		t.Fatalf("RunLinph(stop) stderr = %q, want unsupported provider guidance", stopStderr.String())
+	}
+
+	rawState, err = os.ReadFile(layout.installedProviderProfilePath())
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", layout.installedProviderProfilePath(), err)
+	}
+	if !strings.Contains(string(rawState), "unsupported-provider") {
+		t.Fatalf("expected provider state file to remain unchanged, got %s", string(rawState))
+	}
+}
+
+func TestInstalledProviderCommandsWorkThroughLinphAdapter(t *testing.T) {
+	restore := overrideInstallGlobals(t)
+	defer restore()
+
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	configDir := filepath.Join(t.TempDir(), "etc", "psiphon")
+	fixtureRoot := t.TempDir()
+	sourceLinph := writeExecutableScript(t, filepath.Join(fixtureRoot, "linph-source.sh"), "#!/bin/sh\nexit 0\n")
+	sourceBinary := buildFakeTunnelBinary(t, repoRoot)
+	baseConfig := filepath.Join(fixtureRoot, "psiphon.config")
+	if err := os.WriteFile(baseConfig, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", baseConfig, err)
+	}
+	currentExecutablePath = func() (string, error) { return sourceLinph, nil }
+
+	var installStdout bytes.Buffer
+	var installStderr bytes.Buffer
+	if exitCode := runInstall(repoRoot, "linph install", []string{
+		"--binary", sourceBinary,
+		"--base-config", baseConfig,
+		"--install-bin-dir", binDir,
+		"--install-config-dir", configDir,
+	}, &installStdout, &installStderr); exitCode != 0 {
+		t.Fatalf("runInstall() exit = %d, stderr = %s", exitCode, installStderr.String())
+	}
+
+	layout := buildInstallLayout(binDir, configDir)
+	installedLinphLauncher = layout.LinphPath
+	installedPsiphonLauncher = filepath.Join(binDir, "psiphon")
+	installedPlinstallerLauncher = filepath.Join(binDir, "plinstaller2")
+	installedPluninstallerPath = filepath.Join(binDir, "pluninstaller")
+	legacyInstalledPsiphonPath = filepath.Join(t.TempDir(), "legacy", "psiphon")
+	installedPsiphonConfigDir = configDir
+	installedPsiphonBinaryPath = layout.PsiphonBinaryPath
+	installedPsiphonConfigPath = layout.PsiphonConfigPath
+	currentExecutablePath = func() (string, error) { return layout.LinphPath, nil }
+
+	var providerStdout bytes.Buffer
+	var providerStderr bytes.Buffer
+	if exitCode := RunLinph([]string{"provider", "get"}, &providerStdout, &providerStderr); exitCode != 0 {
+		t.Fatalf("RunLinph(provider get) exit = %d, stderr = %s", exitCode, providerStderr.String())
+	}
+	if got := strings.TrimSpace(providerStdout.String()); got != installedProviderPsi {
+		t.Fatalf("provider get = %q, want %q", got, installedProviderPsi)
+	}
+
+	providerStdout.Reset()
+	providerStderr.Reset()
+	if exitCode := RunLinph([]string{"provider", "set", "psiphon"}, &providerStdout, &providerStderr); exitCode != 0 {
+		t.Fatalf("RunLinph(provider set psiphon) exit = %d, stderr = %s", exitCode, providerStderr.String())
+	}
+	if got := strings.TrimSpace(providerStdout.String()); got != installedProviderPsi {
+		t.Fatalf("provider set output = %q, want %q", got, installedProviderPsi)
+	}
+
+	var psiStdout bytes.Buffer
+	var psiStderr bytes.Buffer
+	if exitCode := RunLinph([]string{"psi", "set", "psiphon", "--slot-count", "1", "--regions", "US"}, &psiStdout, &psiStderr); exitCode != 0 {
+		t.Fatalf("RunLinph(psi set psiphon) exit = %d, stderr = %s", exitCode, psiStderr.String())
+	}
+	if got := strings.TrimSpace(psiStdout.String()); !strings.Contains(got, "slot-001") {
+		t.Fatalf("psi set output = %q, want slot summary", got)
+	}
+}
+
 func TestInstalledProviderStateMigratesLegacyProfile(t *testing.T) {
 	layout := buildInstallLayout(filepath.Join(t.TempDir(), "bin"), filepath.Join(t.TempDir(), "etc", "psiphon"))
 	legacyProfile := installedProfile{

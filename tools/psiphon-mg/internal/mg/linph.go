@@ -8,9 +8,11 @@ import (
 )
 
 type linphApp struct {
-	stdout   io.Writer
-	stderr   io.Writer
-	repoRoot string
+	stdout    io.Writer
+	stderr    io.Writer
+	repoRoot  string
+	owner     string
+	usageName string
 }
 
 func RunLinph(args []string, stdout, stderr io.Writer) int {
@@ -19,9 +21,11 @@ func RunLinph(args []string, stdout, stderr io.Writer) int {
 
 func RunLinphAlias(invokedAs string, args []string, stdout, stderr io.Writer) int {
 	app := &linphApp{
-		stdout:   stdout,
-		stderr:   stderr,
-		repoRoot: resolveRepoRoot(),
+		stdout:    stdout,
+		stderr:    stderr,
+		repoRoot:  resolveRepoRoot(),
+		owner:     invokedAs,
+		usageName: "linph",
 	}
 	return app.run(filepath.Base(invokedAs), args)
 }
@@ -86,8 +90,18 @@ func (a *linphApp) runInstalledCommand(usageName string, args []string) int {
 }
 
 func (a *linphApp) runInstalledControlCommand(command string, args []string) int {
-	installed := &app{stdout: a.stdout, stderr: a.stderr, repoRoot: a.repoRoot, owner: "linph", usageName: "linph"}
+	installed := &app{stdout: a.stdout, stderr: a.stderr, repoRoot: a.repoRoot, owner: a.owner, usageName: a.usageName}
 	return installed.runInstalledControlCommand(command, args)
+}
+
+func (a *linphApp) runProviderCommand(args []string) int {
+	installed := &app{stdout: a.stdout, stderr: a.stderr, repoRoot: a.repoRoot, owner: a.owner, usageName: a.usageName}
+	return installed.runProviderCommand(args)
+}
+
+func (a *linphApp) runPsiCommand(args []string) int {
+	installed := &app{stdout: a.stdout, stderr: a.stderr, repoRoot: a.repoRoot, owner: a.owner, usageName: a.usageName}
+	return installed.runPsiCommand(args)
 }
 
 func (a *linphApp) usage(w io.Writer) {
