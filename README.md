@@ -27,20 +27,27 @@ go build -o ../../tools/psiphon-mg/bin/pluninstaller ./cmd/pluninstaller
 go build -o ../../tools/psiphon-mg/bin/plinstaller2 ./cmd/plinstaller2
 ```
 
-### 2）一键安装 / 卸载
+### 2）引导安装 / 系统安装 / 卸载
 
-推荐直接使用仓库根目录脚本：
+推荐直接使用仓库根目录脚本先引导安装 `linph`，再显式执行系统安装：
 
 ```
 bash ./install.sh
+linph install --binary ./archive/psiphon-tunnel-core-x86_64
+linph start
+bash ./install.sh --legacy-full-install
 bash ./uninstall.sh
 bash ./uninstall.sh --purge
 ```
 
-- `install.sh` 会本地构建 `linph`；在交互终端且未传参时会先问 `english/中文`，再问是否安装，并在继续收集端口/地区前先预检 `go`：如果缺失且检测到受支持的包管理器，会询问是否自动安装；之后再进入单端口/多端口、端口与地区，并在执行前预览**最终推导后的每槽端口**
-- 交互安装会按 VPS 有效内存自动计算默认槽位上限：`floor(totalMiB / 100)`，等价于“50%% 内存 / 50 MiB 每隧道”；会优先使用 cgroup 限制，其次才是宿主机总内存
-- `bash ./install.sh --fk`、`linph install --fk`、`plinstaller2 --fk` 会忽略这个内存上限，但绝对硬上限仍然是 `28` 个槽位
-- 交互安装会在确认前预警未托管安装目标、旧 `psiphon.service` 冲突和端口越界；显式传入 install 参数，或在非交互环境调用时，`install.sh` 不会弹出依赖安装提示，而是对缺失的 `go` / `sudo` 直接快速失败并给出手动处理提示
+- `install.sh` 默认只会本地构建并安装 `linph` 命令，然后提示下一步运行 `linph install`；它不会安装 tunnel-core、配置、兼容别名、provider state，也不会启动槽位
+- `bash ./install.sh --legacy-full-install` 暂时保留旧的完整交互安装路径：会先问 `english/中文`，再问是否安装，并在继续收集端口/地区前先预检 `go`：如果缺失且检测到受支持的包管理器，会询问是否自动安装；之后再进入单端口/多端口、端口与地区，并在执行前预览**最终推导后的每槽端口**
+- 交互完整安装会按 VPS 有效内存自动计算默认槽位上限：`floor(totalMiB / 100)`，等价于“50%% 内存 / 50 MiB 每隧道”；会优先使用 cgroup 限制，其次才是宿主机总内存
+- `bash ./install.sh --legacy-full-install --fk`、`linph install --fk`、`plinstaller2 --fk` 会忽略这个内存上限，但绝对硬上限仍然是 `28` 个槽位
+- `linph install` 默认只写入系统 artifacts 和 Psiphon provider state；需要启动已安装槽位时再运行 `linph start`，或显式传 `linph install --start`
+- `linph psi set` 可更新 Psiphon provider 的槽位数、地区和 HTTP/SOCKS 起始端口；`linph provider get` / `linph provider set psi` 用于查看或选择 active provider
+- `install.sh` 的 curl-pipe/脚本路径只是便利引导路径，不等同于加密可信安装路径；需要真实性保证时应使用经过签名验证的 release package 或本地审核制品
+- 显式传入 install 参数，或在非交互环境调用时，`install.sh` 不会弹出依赖安装提示，而是对缺失的 `go` / `sudo` 直接快速失败并给出手动处理提示
 - `uninstall.sh` 会优先调用已安装的 `linph uninstall`
 - 默认卸载会保留 `/etc/psiphon/psiphon.config`
 - `--purge` 会删除整个 `/etc/psiphon`
@@ -162,7 +169,7 @@ tools/psiphon-mg/bin/linph mg status \
 当前推荐的全局入口是 `linph`，兼容入口 `psiphon`、`pluninstaller`、`plinstaller2` 都会路由到同一套 Go 逻辑。
 
 - `linph run` / `psiphon`：执行已安装的 `/etc/psiphon/psiphon-tunnel-core-x86_64 -config /etc/psiphon/psiphon.config`
-- `linph install` / `plinstaller2`：从**本地人工审核制品**安装 `linph`、兼容别名、tunnel-core 和配置，并持久化/启动已安装多槽 profile；默认槽位数还会受到主机有效内存上限约束
+- `linph install` / `plinstaller2`：从**本地人工审核制品**安装 `linph`、兼容别名、tunnel-core 和配置，并持久化 Psiphon provider state；默认不启动槽位，槽位数还会受到主机有效内存上限约束
 - `linph uninstall` / `pluninstaller`：卸载 `linph` 和兼容别名；默认保留配置，`--purge` 删除整个配置目录
 
 默认安装位置：
@@ -179,15 +186,16 @@ tools/psiphon-mg/bin/linph mg status \
 - 默认至少允许 `1` 槽，绝对最多允许 `28` 槽
 - 需要临时忽略内存上限时，可显式传 `--fk`
 
-安装完成后可直接运行：
+安装完成后可直接运行前台兼容入口：
 
 ```
 linph run
 ```
 
-也可以直接使用多槽 control plane：
+也可以先启动再使用多槽 control plane：
 
 ```bash
+linph start
 linph port
 linph ctry
 linph stop
@@ -281,7 +289,7 @@ tools/psiphon-mg/bin/linph mg switch JP
 - 保存人工审核过的本地制品
 - 保存旧流程说明
 
-当前主线的运行逻辑不依赖 shell 包装层；`install.sh` / `uninstall.sh` 只是为了方便调用 `linph install` / `linph uninstall`。
+当前主线的运行逻辑不依赖 shell 包装层；`install.sh` 默认只是为了引导安装 `linph`，完整系统安装由 `linph install` 承担。
 
 ## 项目状态
 

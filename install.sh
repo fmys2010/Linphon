@@ -195,6 +195,36 @@ describe_go_install_command() {
   esac
 }
 
+path_requires_privilege() {
+  local path="$1"
+  local parent=""
+
+  if [[ -d "$path" ]]; then
+    [[ -w "$path" ]] && return 1
+    return 0
+  fi
+
+  parent="$(dirname "$path")"
+  while [[ ! -e "$parent" && "$parent" != "/" ]]; do
+    parent="$(dirname "$parent")"
+  done
+
+  [[ -d "$parent" && -w "$parent" ]] && return 1
+  return 0
+}
+
+run_path_command() {
+  local target_path="$1"
+  shift
+
+  if path_requires_privilege "$target_path"; then
+    run_privileged_command "$@"
+    return $?
+  fi
+
+  "$@"
+}
+
 run_privileged_command() {
   if [[ "$(id -u)" -eq 0 ]]; then
     "$@"
@@ -837,6 +867,71 @@ print_service_warning() {
   esac
 }
 
+
+print_bootstrap_help() {
+  cat <<'EOF'
+Usage:
+  bash ./install.sh [--install-bin-dir PATH]
+  bash ./install.sh --legacy-full-install [install options]
+  bash ./install.sh --help
+
+Default behavior bootstraps only the linph command. It builds linph from this
+checkout, installs it into the selected bin directory, and prints the next step:
+  linph install
+
+Options:
+  --install-bin-dir PATH      Install linph here (default: /usr/local/bin).
+  --legacy-full-install       Run the previous full interactive/system install flow.
+  --help                      Show this message.
+
+The curl-pipe/bootstrap path is a convenience path, not the cryptographically
+trusted install path. Use reviewed local sources or a verified release package
+when authenticity matters.
+EOF
+}
+
+install_linph_bootstrap() {
+  local install_bin_dir="$DEFAULT_INSTALL_BIN_DIR"
+  local arg=""
+
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
+    case "$arg" in
+      --install-bin-dir)
+        if [[ $# -lt 2 ]]; then
+          printf '%s\n' '--install-bin-dir requires a value' >&2
+          return 64
+        fi
+        install_bin_dir="$2"
+        shift 2
+        ;;
+      --help|-h)
+        print_bootstrap_help
+        return 0
+        ;;
+      *)
+        printf 'unknown bootstrap option: %s\n' "$arg" >&2
+        print_bootstrap_help >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if path_requires_privilege "$install_bin_dir"; then
+    preflight_build_dependencies 0 1
+  else
+    preflight_build_dependencies 0 0
+  fi
+  build_linph
+  run_path_command "$install_bin_dir" mkdir -p "$install_bin_dir"
+  run_path_command "$install_bin_dir" cp "$LINPH_BIN" "$install_bin_dir/linph"
+  run_path_command "$install_bin_dir" chmod 0755 "$install_bin_dir/linph"
+
+  printf 'installed linph to %s\n' "$install_bin_dir/linph"
+  printf 'next step: linph install\n'
+  printf 'provider setup: linph psi set [options]\n'
+}
+
 build_linph() {
   ensure_command go
   mkdir -p "$(dirname "$LINPH_BIN")"
@@ -976,23 +1071,49 @@ run_install_help() {
 
 main() {
   local interactive_force_unlock=0
+  local legacy_full_install=0
+  local bootstrap_args=()
+  local arg=""
+
+  for arg in "$@"; do
+    case "$arg" in
+      --legacy-full-install)
+        legacy_full_install=1
+        ;;
+      *)
+        bootstrap_args+=("$arg")
+        ;;
+    esac
+  done
+  set -- "${bootstrap_args[@]}"
+
+  if [[ "$legacy_full_install" -eq 1 ]]; then
+    if [[ $# -eq 1 && ( "$1" == '--help' || "$1" == '-h' ) ]]; then
+      run_install_help "$@"
+      return 0
+    fi
+
+    if [[ $# -eq 1 && "$1" == '--fk' && -t 0 && -t 1 ]]; then
+      interactive_force_unlock=1
+      set --
+    fi
+
+    if [[ $# -eq 0 && -t 0 && -t 1 ]]; then
+      run_interactive_install "$interactive_force_unlock"
+    fi
+
+    preflight_build_dependencies 0 1
+    build_linph
+    run_install "$@"
+    return 0
+  fi
 
   if [[ $# -eq 1 && ( "$1" == '--help' || "$1" == '-h' ) ]]; then
-    run_install_help "$@"
+    print_bootstrap_help
+    exit 0
   fi
 
-  if [[ $# -eq 1 && "$1" == '--fk' && -t 0 && -t 1 ]]; then
-    interactive_force_unlock=1
-    set --
-  fi
-
-  if [[ $# -eq 0 && -t 0 && -t 1 ]]; then
-    run_interactive_install "$interactive_force_unlock"
-  fi
-
-  preflight_build_dependencies 0 1
-  build_linph
-  run_install "$@"
+  install_linph_bootstrap "$@"
 }
 
 main "$@"
