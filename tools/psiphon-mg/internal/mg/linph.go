@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 )
 
+const LinphonVersion = "1.3.1"
+
 type linphApp struct {
 	stdout    io.Writer
 	stderr    io.Writer
@@ -52,6 +54,8 @@ func (a *linphApp) run(invokedAs string, args []string) int {
 		return a.runProviderCommand(args[1:])
 	case "psi":
 		return a.runPsiCommand(args[1:])
+	case "vg":
+		return a.runVGCommand(args[1:])
 	case "start", "restart", "stop", "port", "ctry", "log", "switch-port", "switch-ctry":
 		return a.runInstalledControlCommand(args[0], args[1:])
 	case "install":
@@ -66,6 +70,9 @@ func (a *linphApp) run(invokedAs string, args []string) int {
 		return RunStagedNamed(args[1:], "linph staged", a.stdout, a.stderr)
 	case "--help", "-h", "help":
 		a.usage(a.stdout)
+		return 0
+	case "--version", "version":
+		fmt.Fprintf(a.stdout, "Linphon %s\n", LinphonVersion)
 		return 0
 	default:
 		fmt.Fprintf(a.stderr, "unknown linph command: %s\n", args[0])
@@ -104,8 +111,15 @@ func (a *linphApp) runPsiCommand(args []string) int {
 	return installed.runPsiCommand(args)
 }
 
+func (a *linphApp) runVGCommand(args []string) int {
+	installed := &app{stdout: a.stdout, stderr: a.stderr, repoRoot: a.repoRoot, owner: a.owner, usageName: a.usageName}
+	return installed.runVGCommand(args)
+}
+
 func (a *linphApp) usage(w io.Writer) {
-	fmt.Fprint(w, `Usage:
+	fmt.Fprintf(w, `Linphon %s
+
+Usage:
   linph run
   linph start
   linph restart
@@ -117,7 +131,10 @@ func (a *linphApp) usage(w io.Writer) {
   linph switch-ctry REGION1,REGION2,...
   linph provider get
   linph provider set psi
+  linph provider set vg
   linph psi set [options]
+  linph vg set [options]
+  linph vg refresh
   linph install [options]
   linph uninstall [options]
   linph mg <command> [options]
@@ -136,6 +153,7 @@ Commands:
   switch-ctry Update regions and restart if running.
   provider    Inspect or select the active provider.
   psi         Configure the Psiphon provider.
+  vg          Configure the VPNGate/OpenVPN provider.
   install     Install linph, the tunnel-core artifact, and compatibility aliases.
   uninstall   Remove linph and installed artifacts; use --purge to delete config dir.
   mg          Repo-local single-region manager commands.
@@ -146,7 +164,7 @@ Compatibility aliases:
   psiphon         Equivalent to linph run
   plinstaller2    Equivalent to linph install
   pluninstaller   Equivalent to linph uninstall
-`)
+`, LinphonVersion)
 }
 
 func runUsage(w io.Writer, usageName string) {

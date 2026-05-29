@@ -76,16 +76,7 @@ func trackedPIDMatchesState(state activeState) bool {
 		return false
 	}
 
-	expectedPairs := [][2]string{}
-	if state.RunDir != "" {
-		expectedPairs = append(expectedPairs, [2]string{"-config", filepath.Join(state.RunDir, "config.json")})
-	}
-	if state.DataDir != "" {
-		expectedPairs = append(expectedPairs, [2]string{"-dataRootDirectory", state.DataDir})
-	}
-	if state.NoticesPath != "" {
-		expectedPairs = append(expectedPairs, [2]string{"-notices", state.NoticesPath})
-	}
+	expectedPairs := stateExpectedProcessArgs(state)
 	if len(expectedPairs) == 0 {
 		return false
 	}
@@ -97,6 +88,29 @@ func trackedPIDMatchesState(state activeState) bool {
 	}
 
 	return true
+}
+
+func stateExpectedProcessArgs(state activeState) [][2]string {
+	if state.Provider == installedProviderVG {
+		if state.ConfigPath == "" {
+			return nil
+		}
+		return [][2]string{{"--config", state.ConfigPath}}
+	}
+
+	expectedPairs := [][2]string{}
+	if state.ConfigPath != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-config", state.ConfigPath})
+	} else if state.RunDir != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-config", filepath.Join(state.RunDir, "config.json")})
+	}
+	if state.DataDir != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-dataRootDirectory", state.DataDir})
+	}
+	if state.NoticesPath != "" {
+		expectedPairs = append(expectedPairs, [2]string{"-notices", state.NoticesPath})
+	}
+	return expectedPairs
 }
 
 func trackedProcessGroupSurvives(state activeState) bool {
@@ -276,12 +290,14 @@ func (a *app) launchRegion(region, binaryPath string, opt options) int {
 	}
 
 	state := activeState{
+		Provider:            installedProviderPsi,
 		Region:              region,
 		PID:                 pid,
 		HTTPPort:            opt.HTTPPort,
 		SocksPort:           opt.SocksPort,
 		BinaryPath:          binaryPath,
 		BaseConfig:          opt.BaseConfig,
+		ConfigPath:          configPath,
 		DataDir:             dataDir,
 		DownloadIfMissing:   opt.DownloadIfMissing,
 		DownloadURL:         opt.DownloadURL,
