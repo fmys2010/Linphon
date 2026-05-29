@@ -46,13 +46,16 @@ cleanup_bootstrap_temp_root() {
 
 trap cleanup_bootstrap_temp_root EXIT
 
-REPO_ROOT="$(bootstrap_repo_root "$BOOTSTRAP_SOURCE_ROOT")"
-LINPH_BIN="$REPO_ROOT/tools/psiphon-mg/bin/linph"
-DEFAULT_BASE_CONFIG="$REPO_ROOT/psiphon.config"
 DEFAULT_INSTALL_BIN_DIR="/usr/local/bin"
 DEFAULT_INSTALL_CONFIG_DIR="/etc/psiphon"
-DEFAULT_RUNTIME_ROOT="$REPO_ROOT/.work/psiphon-harness"
+REPO_ROOT=""
+LINPH_BIN=""
+DEFAULT_BASE_CONFIG=""
+DEFAULT_RUNTIME_ROOT=""
 DEFAULT_SUPPORTED_REGIONS="AT,BE,BG,CA,CH,CZ,DE,DK,EE,ES,FI,FR,GB,HU,IE,IN,IT,JP,LV,NL,NO,PL,RO,RS,SE,SG,SK,US"
+DEFAULT_BOOTSTRAP_VERSION_URL="https://raw.githubusercontent.com/fmys2010/Linphon/main/tools/psiphon-mg/internal/mg/linph.go"
+BOOTSTRAP_VERSION_URL="${LINPHON_BOOTSTRAP_VERSION_URL:-$DEFAULT_BOOTSTRAP_VERSION_URL}"
+INSTALLED_VERSION_FILENAME=".linph-version"
 INSTALLED_SLOT_HARD_LIMIT=28
 INSTALLED_SLOT_FALLBACK_CAP=1
 INSTALLED_SLOT_MEMORY_SCALE_DIV=100
@@ -72,6 +75,16 @@ DERIVED_SLOT_LINES=()
 PRECHECK_CONFLICTS=()
 COLLECTED_START_HTTP_PORT=""
 COLLECTED_START_SOCKS_PORT=""
+
+initialize_repo_paths() {
+  if [[ -n "$REPO_ROOT" ]]; then
+    return 0
+  fi
+  REPO_ROOT="$(bootstrap_repo_root "$BOOTSTRAP_SOURCE_ROOT")"
+  LINPH_BIN="$REPO_ROOT/tools/psiphon-mg/bin/linph"
+  DEFAULT_BASE_CONFIG="$REPO_ROOT/psiphon.config"
+  DEFAULT_RUNTIME_ROOT="$REPO_ROOT/.work/psiphon-harness"
+}
 
 lang_printf() {
   local english="$1"
@@ -306,6 +319,126 @@ run_go_auto_install() {
       return 1
       ;;
   esac
+}
+
+extract_linphon_version() {
+  local input="$1"
+  local version=""
+  if [[ "$input" =~ LinphonVersion[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
+    version="${BASH_REMATCH[1]}"
+  elif [[ "$input" =~ Linphon[[:space:]]+([0-9]+(\.[0-9]+)*) ]]; then
+    version="${BASH_REMATCH[1]}"
+  elif [[ "$input" =~ ^[[:space:]]*([0-9]+(\.[0-9]+)*)[[:space:]]*$ ]]; then
+    version="${BASH_REMATCH[1]}"
+  fi
+  printf '%s\n' "$version"
+}
+
+write_installed_linph_version() {
+  local install_bin_dir="$1"
+  local version="$2"
+  [[ -n "$version" ]] || return 0
+  run_path_command "$install_bin_dir" sh -c 'printf "%s\n" "$1" > "$2"' sh "$version" "$install_bin_dir/$INSTALLED_VERSION_FILENAME"
+}
+
+installed_linph_version() {
+  local install_bin_dir="$1"
+  local version_path="$install_bin_dir/$INSTALLED_VERSION_FILENAME"
+  if [[ ! -x "$install_bin_dir/linph" ]]; then
+    return 1
+  fi
+  if [[ ! -r "$version_path" ]]; then
+    return 1
+  fi
+  extract_linphon_version "$(<"$version_path")"
+}
+
+source_linphon_version() {
+  initialize_repo_paths
+  local path="$REPO_ROOT/tools/psiphon-mg/internal/mg/linph.go"
+  if [[ ! -r "$path" ]]; then
+    return 1
+  fi
+  extract_linphon_version "$(<"$path")"
+}
+
+latest_linphon_version() {
+  local data=""
+  if [[ "$BOOTSTRAP_VERSION_URL" == file://* ]]; then
+    local path="${BOOTSTRAP_VERSION_URL#file://}"
+    [[ -r "$path" ]] || return 1
+    data="$(<"$path")"
+  else
+    data="$(curl --connect-timeout 5 --max-time 15 -fsSL "$BOOTSTRAP_VERSION_URL")" || return 1
+  fi
+  extract_linphon_version "$data"
+}
+
+bootstrap_install_state() {
+  local install_bin_dir="$1"
+  local installed_version=""
+  local latest_version=""
+  if ! installed_version="$(installed_linph_version "$install_bin_dir")" || [[ -z "$installed_version" ]]; then
+    if [[ -x "$install_bin_dir/linph" ]]; then
+      printf '%s\n' 'update'
+      return 0
+    fi
+    printf '%s\n' 'missing'
+    return 0
+  fi
+  if latest_version="$(latest_linphon_version 2>/dev/null)" && [[ -n "$latest_version" ]]; then
+    if [[ "$installed_version" == "$latest_version" ]]; then
+      printf '%s\n' 'current'
+    else
+      printf '%s\n' 'update'
+    fi
+    return 0
+  fi
+  local source_version=""
+  if source_version="$(source_linphon_version)" && [[ -n "$source_version" && "$installed_version" == "$source_version" ]]; then
+    printf '%s\n' 'current'
+    return 0
+  fi
+  printf '%s\n' 'update'
+}
+
+parse_bootstrap_install_bin_dir() {
+  local install_bin_dir="$DEFAULT_INSTALL_BIN_DIR"
+  local arg=""
+
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
+    case "$arg" in
+      --install-bin-dir)
+        if [[ $# -lt 2 ]]; then
+          return 64
+        fi
+        install_bin_dir="$2"
+        shift 2
+        ;;
+      --help|-h)
+        return 65
+        ;;
+      *)
+        return 66
+        ;;
+    esac
+  done
+  printf '%s\n' "$install_bin_dir"
+}
+
+maybe_exit_if_bootstrap_current() {
+  local install_bin_dir=""
+  local install_state=""
+
+  if ! install_bin_dir="$(parse_bootstrap_install_bin_dir "$@")"; then
+    return 0
+  fi
+  install_state="$(bootstrap_install_state "$install_bin_dir")"
+  if [[ "$install_state" == 'current' ]]; then
+    printf '已是最新版本\n'
+    exit 0
+  fi
 }
 
 preflight_build_dependencies() {
@@ -935,6 +1068,8 @@ checkout, installs it into the selected bin directory, and prints the next step:
 
 If Go is missing, the bootstrap path attempts to install the distro Go package
 first, for example golang-go on Debian/Ubuntu apt systems.
+When linph is already installed, running this script checks for updates first;
+if no newer version is available it prints 已是最新版本 and exits.
 
 Options:
   --install-bin-dir PATH      Install linph here (default: /usr/local/bin).
@@ -947,9 +1082,48 @@ when authenticity matters.
 EOF
 }
 
+collect_restart_schedule_arg() {
+  local __outvar="$1"
+  local reply=""
+  local hours=""
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    printf -v "$__outvar" '%s' '0'
+    return 0
+  fi
+
+  while true; do
+    read_lang_prompt reply \
+      'Enable periodic restart to refresh IP? [y/N] ' \
+      '是否启用定期重启以重新获取 IP？[y/N] '
+    case "$reply" in
+      y|Y|yes|YES|Yes)
+        while true; do
+          read_lang_prompt hours \
+            'Restart interval in hours (1-168): ' \
+            '重启间隔，单位小时（1-168）： '
+          hours="${hours//[[:space:]]/}"
+          if [[ "$hours" =~ ^[0-9]+$ ]] && (( hours >= 1 && hours <= 168 )); then
+            printf -v "$__outvar" '%s' "$hours"
+            return 0
+          fi
+          lang_eprintf 'hours must be between 1 and 168\n' '小时数必须在 1 到 168 之间\n'
+        done
+        ;;
+      ""|n|N|no|NO|No)
+        printf -v "$__outvar" '%s' '0'
+        return 0
+        ;;
+    esac
+    lang_eprintf 'please answer y or n\n' '请输入 y 或 n\n'
+  done
+}
+
 install_linph_bootstrap() {
   local install_bin_dir="$DEFAULT_INSTALL_BIN_DIR"
   local arg=""
+  local install_state=""
+  local source_version=""
 
   while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -966,13 +1140,24 @@ install_linph_bootstrap() {
         print_bootstrap_help
         return 0
         ;;
-      *)
-        printf 'unknown bootstrap option: %s\n' "$arg" >&2
-        print_bootstrap_help >&2
-        return 64
-        ;;
+    *)
+      printf 'unknown bootstrap option: %s\n' "$arg" >&2
+      print_bootstrap_help >&2
+      return 64
+      ;;
     esac
   done
+
+  install_state="$(bootstrap_install_state "$install_bin_dir")"
+  if [[ "$install_state" == 'current' ]]; then
+    printf '已是最新版本\n'
+    return 0
+  fi
+  if [[ "$install_state" == 'update' ]]; then
+    printf 'detected installed linph update; updating %s/linph\n' "$install_bin_dir"
+  fi
+
+  initialize_repo_paths
 
   if path_requires_privilege "$install_bin_dir"; then
     preflight_build_dependencies 1 1 0
@@ -980,9 +1165,11 @@ install_linph_bootstrap() {
     preflight_build_dependencies 1 0 0
   fi
   build_linph
+  source_version="$(source_linphon_version || true)"
   run_path_command "$install_bin_dir" mkdir -p "$install_bin_dir"
   run_path_command "$install_bin_dir" cp "$LINPH_BIN" "$install_bin_dir/linph"
   run_path_command "$install_bin_dir" chmod 0755 "$install_bin_dir/linph"
+  write_installed_linph_version "$install_bin_dir" "$source_version"
 
   printf 'installed linph to %s\n' "$install_bin_dir/linph"
   printf 'next step: linph install\n'
@@ -990,6 +1177,7 @@ install_linph_bootstrap() {
 }
 
 build_linph() {
+  initialize_repo_paths
   ensure_command go
   mkdir -p "$(dirname "$LINPH_BIN")"
   (
@@ -1001,6 +1189,8 @@ build_linph() {
 run_install() {
   local -a install_args=("$@")
 
+  initialize_repo_paths
+
   if [[ "$(id -u)" -ne 0 ]]; then
     ensure_command sudo
     exec sudo env PSIPHON_MG_REPO_ROOT="$REPO_ROOT" "$LINPH_BIN" install "${install_args[@]}"
@@ -1011,6 +1201,8 @@ run_install() {
 
 run_legacy_install() {
   local -a install_args=("$@")
+
+  initialize_repo_paths
 
   install_args+=(--start)
 
@@ -1040,7 +1232,10 @@ run_interactive_install() {
   local http_port=""
   local socks_port=""
   local regions_csv=""
+  local restart_every_hours="0"
   local -a install_args=()
+
+  initialize_repo_paths
 
   SCRIPT_FORCE_UNLOCK="$force_unlock"
   SUPPORTED_REGIONS_CSV="$(load_supported_regions_csv)"
@@ -1074,6 +1269,7 @@ run_interactive_install() {
   http_port="$COLLECTED_START_HTTP_PORT"
   socks_port="$COLLECTED_START_SOCKS_PORT"
   render_slot_plan "$slot_count" "$regions_csv"
+  collect_restart_schedule_arg restart_every_hours
 
   if [[ -n "$detected_binary" ]]; then
     lang_printf 'Detected tunnel-core: %s\n' '检测到 tunnel-core：%s\n' "$detected_binary"
@@ -1105,6 +1301,11 @@ run_interactive_install() {
   fi
   lang_printf '  --fk override     -> %s\n' '  --fk 解锁         -> %s\n' "$([[ "$SCRIPT_FORCE_UNLOCK" -eq 0 ]] && printf 'off' || printf 'on')"
   lang_printf '  --force overwrite -> %s\n' '  --force 覆盖      -> %s\n' "$([[ "$FORCE_INSTALL_FLAG" -eq 0 ]] && printf 'off' || printf 'on')"
+  if (( restart_every_hours > 0 )); then
+    lang_printf '  periodic restart  -> every %s hour(s)\n' '  定期重启          -> 每 %s 小时\n' "$restart_every_hours"
+  else
+    lang_printf '  periodic restart  -> disabled\n' '  定期重启          -> 不启用\n'
+  fi
   lang_printf '  linph and aliases -> %s\n' '  linph 与别名      -> %s\n' "$DEFAULT_INSTALL_BIN_DIR"
   lang_printf '  psiphon assets    -> %s\n' '  psiphon 资源      -> %s\n' "$DEFAULT_INSTALL_CONFIG_DIR"
   lang_printf '  tunnel-core       -> %s\n' '  tunnel-core       -> %s\n' "$binary_path"
@@ -1123,6 +1324,7 @@ run_interactive_install() {
   install_args+=(--installed-http-port "$http_port")
   install_args+=(--installed-socks-port "$socks_port")
   install_args+=(--installed-regions "$regions_csv")
+  install_args+=(--restart-every-hours "$restart_every_hours")
   install_args+=(--binary "$binary_path")
   if (( SCRIPT_FORCE_UNLOCK != 0 )); then
     install_args+=(--fk)
@@ -1134,6 +1336,7 @@ run_interactive_install() {
 }
 
 run_install_help() {
+  initialize_repo_paths
   preflight_build_dependencies 0 0
   build_linph
   exec env PSIPHON_MG_REPO_ROOT="$REPO_ROOT" "$LINPH_BIN" install "$@"
@@ -1183,6 +1386,7 @@ main() {
     exit 0
   fi
 
+  maybe_exit_if_bootstrap_current "$@"
   install_linph_bootstrap "$@"
 }
 

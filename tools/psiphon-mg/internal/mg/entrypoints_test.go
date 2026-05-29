@@ -190,6 +190,78 @@ func TestInstallScriptBootstrapsFromProcessSubstitution(t *testing.T) {
 	}
 }
 
+func TestInstallScriptProcessSubstitutionCurrentSkipsArchiveFetch(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", binDir, err)
+	}
+	writeExecutableScript(t, filepath.Join(binDir, "linph"), "#!/bin/sh\nexit 99\n")
+	versionFile := filepath.Join(t.TempDir(), "version.txt")
+	if err := os.WriteFile(versionFile, []byte(LinphonVersion+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(version.txt): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, ".linph-version"), []byte(LinphonVersion+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.linph-version): %v", err)
+	}
+
+	cmd := exec.Command("bash", "-c", "bash <(cat install.sh) --install-bin-dir \"$1\"", "bash", binDir)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"LINPHON_BOOTSTRAP_VERSION_URL=file://"+versionFile,
+		"LINPHON_BOOTSTRAP_ARCHIVE_URL=file:///does-not-exist.tar.gz",
+	)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("install.sh no-update process substitution: %v (stdout=%s stderr=%s)", err, stdout.String(), stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "已是最新版本" {
+		t.Fatalf("stdout = %q, want exact current-version message", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "fetching Linphon source archive") {
+		t.Fatalf("stderr = %q, did not want source archive fetch", stderr.String())
+	}
+}
+
+func TestInstallScriptBootstrapUpdatesOlderSidecarVersion(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", binDir, err)
+	}
+	writeExecutableScript(t, filepath.Join(binDir, "linph"), "#!/bin/sh\nexit 99\n")
+	if err := os.WriteFile(filepath.Join(binDir, ".linph-version"), []byte("0.0.1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.linph-version): %v", err)
+	}
+	versionFile := filepath.Join(t.TempDir(), "version.txt")
+	if err := os.WriteFile(versionFile, []byte(LinphonVersion+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(version.txt): %v", err)
+	}
+
+	cmd := exec.Command("bash", filepath.Join(repoRoot, "install.sh"), "--install-bin-dir", binDir)
+	cmd.Env = append(os.Environ(), "LINPHON_BOOTSTRAP_VERSION_URL=file://"+versionFile)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("install.sh update bootstrap: %v (stdout=%s stderr=%s)", err, stdout.String(), stderr.String())
+	}
+	versionData, err := os.ReadFile(filepath.Join(binDir, ".linph-version"))
+	if err != nil {
+		t.Fatalf("ReadFile(.linph-version): %v", err)
+	}
+	if strings.TrimSpace(string(versionData)) != LinphonVersion {
+		t.Fatalf("sidecar version = %q, want %q", strings.TrimSpace(string(versionData)), LinphonVersion)
+	}
+	if !strings.Contains(stdout.String(), "detected installed linph update") || !strings.Contains(stdout.String(), "installed linph") {
+		t.Fatalf("stdout = %q, want update and install guidance", stdout.String())
+	}
+}
+
 func TestRunInstallStartPathStartsInstalledSlots(t *testing.T) {
 	restore := overrideInstallGlobals(t)
 	defer restore()
@@ -722,7 +794,6 @@ func overrideInstallGlobals(t *testing.T) func() {
 		installedReadFile = origInstalledReadFile
 	}
 }
-
 func writeExecutableScript(t *testing.T, path, content string) string {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
