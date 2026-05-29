@@ -1,6 +1,8 @@
 # Linphon 使用说明
 
-Linphon 是一个 Linux 上使用 Psiphon 的小工具。你可以把它理解成：先安装一个 `linph` 命令，然后用这个命令安装、启动、停止和管理代理。
+当前正式版本：`1.3.1`
+
+Linphon 是一个 Linux 上使用 Psiphon 和 VPNGate 的小工具。你可以把它理解成：先安装一个 `linph` 命令，然后用这个命令安装、启动、停止和管理代理或 VPN。
 
 如果你只是想用，不需要关心技术细节。照着下面命令走就行。
 
@@ -166,9 +168,56 @@ SOCKS 代理: 127.0.0.1  1081
 
 设置好后，打开 IP 查询网站，看看出口 IP 是否变化。
 
+## 使用 VPNGate
+
+默认安装后用的是 Psiphon，也就是本地 HTTP/SOCKS 代理。如果你想改用 VPNGate，可以先准备系统里的 OpenVPN：
+
+```bash
+sudo apt install openvpn
+```
+
+VPNGate/OpenVPN 通常需要 root 权限或 `CAP_NET_ADMIN`，机器上还要有 `/dev/net/tun`。
+
+然后启用 VPNGate：
+
+```bash
+linph vg set vpngate --regions US --activate
+linph start
+```
+
+VPNGate 走的是系统 VPN 路由，不是本地代理端口，所以启用后一般不需要再给浏览器填 `127.0.0.1:8081`。
+
+常用命令：
+
+```bash
+# 查看当前 provider
+linph provider get
+
+# 切换 VPNGate 地区
+linph switch-ctry JP
+
+# 刷新 VPNGate 服务器列表
+linph vg refresh
+
+# 切回 Psiphon 代理
+linph provider set psiphon
+linph restart
+```
+
+VPNGate 是志愿者服务器，稳定性会波动。如果某个地区连不上，可以换一个地区再试。
+
+`linph provider set vg` 只会切换到已经通过 `linph vg set ...` 配好的 VPNGate 配置；它不会自动创建新的 live 配置。
+
+如果你要调试自建服务器列表或离线 fixture，才需要考虑 `--allow-insecure-api-url`、`--allow-local-api-url` 或 `--allow-unsafe-cache-path` 这类高级覆盖项。
+
 ## 查看当前 provider
 
-当前第一阶段只支持 Psiphon provider。一般不用管这个。
+普通用户一般不用管 provider。你只需要知道：
+
+```text
+psi = Psiphon，本地 HTTP/SOCKS 代理
+vg  = VPNGate，系统 VPN 路由，需要 OpenVPN
+```
 
 如果你想看当前 provider：
 
@@ -181,6 +230,14 @@ linph provider get
 ```bash
 linph provider set psiphon
 ```
+
+如果需要切换到 VPNGate：
+
+```bash
+linph provider set vg
+```
+
+注意：这条命令要求你已经运行过 `linph vg set vpngate --regions US --activate` 配好 VPNGate。第一次切换 VPNGate 时，优先用 `linph vg set ... --activate`。
 
 ## 卸载
 
@@ -240,6 +297,12 @@ export PATH="/usr/local/bin:$PATH"
 
 ```bash
 linph --help
+```
+
+查看版本：
+
+```bash
+linph --version
 ```
 
 ### 启动失败怎么办？

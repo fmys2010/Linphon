@@ -1,6 +1,6 @@
 # Linphon phase-one migration contract
 
-Phase one splits bootstrap, system install, provider configuration, and runtime control while keeping the existing Psiphon behavior compatible. VPNGate is explicitly out of scope for this phase.
+Phase one splits bootstrap, system install, provider configuration, and runtime control while keeping the existing Psiphon behavior compatible. VPNGate was explicitly out of scope for this phase; this document is retained as the historical phase-one contract and is superseded by the later VPNGate implementation work.
 
 ## Command ownership
 
