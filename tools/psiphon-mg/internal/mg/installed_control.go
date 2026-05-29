@@ -195,7 +195,7 @@ func (a *app) commandInstalledSwitchPort(layout installLayout, args []string) in
 		a.err("%v", err)
 		return ExitUsage
 	}
-	if err := writeInstalledProfile(layout.installedProfilePath(), profile); err != nil {
+	if err := writeInstalledProviderState(layout, installedProviderStateFromPsi(profile)); err != nil {
 		a.err("failed to persist installed profile: %v", err)
 		return ExitUsage
 	}
@@ -233,7 +233,7 @@ func (a *app) commandInstalledSwitchCtry(layout installLayout, args []string) in
 		a.err("%v", err)
 		return ExitUsage
 	}
-	if err := writeInstalledProfile(layout.installedProfilePath(), profile); err != nil {
+	if err := writeInstalledProviderState(layout, installedProviderStateFromPsi(profile)); err != nil {
 		a.err("failed to persist installed profile: %v", err)
 		return ExitUsage
 	}
@@ -247,12 +247,16 @@ func (a *app) commandInstalledSwitchCtry(layout installLayout, args []string) in
 }
 
 func (a *app) installedProfileAndSpecs(layout installLayout) (installedProfile, []installedSlotSpec, error) {
-	profile, ok, err := readInstalledProfile(layout.installedProfilePath())
+	state, ok, err := loadInstalledProviderState(layout)
 	if err != nil {
 		return installedProfile{}, nil, err
 	}
 	if !ok {
-		return installedProfile{}, nil, fmt.Errorf("installed profile not found at %s", layout.installedProfilePath())
+		return installedProfile{}, nil, fmt.Errorf("installed profile not found at %s", layout.installedProviderProfilePath())
+	}
+	profile, err := installedPsiProfileFromState(state)
+	if err != nil {
+		return installedProfile{}, nil, err
 	}
 	return a.installedProfileAndSpecsFromProfile(layout, profile)
 }

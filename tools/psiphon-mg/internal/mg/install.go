@@ -27,6 +27,7 @@ type installOptions struct {
 	InstalledProfileSet bool
 	ForceUnlockSlotCap  bool
 	Force               bool
+	StartInstalledSlots bool
 }
 
 type uninstallOptions struct {
@@ -101,6 +102,8 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 			i++
 		case "--force":
 			opt.Force = true
+		case "--start":
+			opt.StartInstalledSlots = true
 		case "--installed-slot-count":
 			if i+1 >= len(args) {
 				fmt.Fprintf(stderr, "--installed-slot-count requires a value\n")
@@ -265,9 +268,12 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 
 	installedApp := &app{stdout: stdout, stderr: stderr, repoRoot: repoRoot, owner: usageName, usageName: usageName}
 	if code := installedApp.withInstalledLock(layout, func() int {
-		if err := writeInstalledProfile(layout.installedProfilePath(), installedProfile); err != nil {
+		if err := writeInstalledProviderState(layout, installedProviderStateFromPsi(installedProfile)); err != nil {
 			fmt.Fprintf(stderr, "failed to write installed profile: %v\n", err)
 			return ExitValidationFailed
+		}
+		if !opt.StartInstalledSlots {
+			return 0
 		}
 		return installedApp.syncInstalledSlots(layout, installedProfile, installedSpecs, false)
 	}); code != 0 {
@@ -281,6 +287,9 @@ func runInstall(repoRoot, usageName string, args []string, stdout, stderr io.Wri
 	fmt.Fprintf(stdout, "installed linph to %s\n", layout.LinphPath)
 	fmt.Fprintf(stdout, "installed tunnel core to %s\n", layout.PsiphonBinaryPath)
 	fmt.Fprintf(stdout, "installed config to %s\n", layout.PsiphonConfigPath)
+	if !opt.StartInstalledSlots {
+		fmt.Fprintln(stdout, "configured Psiphon provider; run `linph start` to start installed slots")
+	}
 	fmt.Fprintln(stdout, "installed slot ports:")
 	fmt.Fprintln(stdout, installedPortsCSV(installedSpecs))
 	return 0
@@ -386,6 +395,7 @@ Options:
   --install-bin-dir PATH      Install bin dir (default: %s).
   --install-config-dir PATH   Install config dir (default: %s).
 	--force                     Overwrite existing unmanaged files.
+	--start                     Start installed slots after writing artifacts and provider state.
 	--fk                        Ignore the memory-based slot cap and unlock up to 28 slots.
 	--installed-slot-count N    Number of installed slots (1-28, further capped by host memory unless --fk).
 	--installed-http-port N     Starting HTTP port for installed slots.

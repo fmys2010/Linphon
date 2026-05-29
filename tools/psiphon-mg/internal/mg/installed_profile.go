@@ -57,27 +57,28 @@ func (layout installLayout) installedProfilePaths() []string {
 }
 
 func readInstalledProfile(path string) (installedProfile, bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return installedProfile{}, false, nil
+	providerPath := filepath.Join(filepath.Dir(path), installedProviderProfileFilename)
+	data, err := os.ReadFile(providerPath)
+	if err == nil {
+		var state installedProviderState
+		if err := json.Unmarshal(data, &state); err != nil {
+			return installedProfile{}, false, err
 		}
+		profile, err := installedPsiProfileFromState(state)
+		if err != nil {
+			return installedProfile{}, false, err
+		}
+		return profile, true, nil
+	}
+	if !os.IsNotExist(err) {
 		return installedProfile{}, false, err
 	}
-	var profile installedProfile
-	if err := json.Unmarshal(data, &profile); err != nil {
-		return installedProfile{}, false, err
-	}
-	return profile, true, nil
+	return readLegacyInstalledProfile(path)
 }
 
 func writeInstalledProfile(path string, profile installedProfile) error {
-	profile.Version = installedProfileVersion
-	data, err := json.MarshalIndent(profile, "", "  ")
-	if err != nil {
-		return err
-	}
-	return copyBytesAtomic(append(data, '\n'), path, 0o644)
+	layout := buildInstallLayout("", filepath.Dir(filepath.Dir(path)))
+	return writeInstalledProviderState(layout, installedProviderStateFromPsi(profile))
 }
 
 func installedProfileFromBaseConfig(repoRoot, baseConfigPath string) (installedProfile, error) {

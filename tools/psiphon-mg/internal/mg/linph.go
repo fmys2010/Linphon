@@ -44,6 +44,10 @@ func (a *linphApp) run(invokedAs string, args []string) int {
 	switch args[0] {
 	case "run":
 		return a.runInstalledCommand("linph run", args[1:])
+	case "provider":
+		return a.runProviderCommand(args[1:])
+	case "psi":
+		return a.runPsiCommand(args[1:])
 	case "start", "restart", "stop", "port", "ctry", "log", "switch-port", "switch-ctry":
 		return a.runInstalledControlCommand(args[0], args[1:])
 	case "install":
@@ -97,6 +101,9 @@ func (a *linphApp) usage(w io.Writer) {
   linph log
   linph switch-port HTTP_PORT SOCKS_PORT
   linph switch-ctry REGION1,REGION2,...
+  linph provider get
+  linph provider set psi
+  linph psi set [options]
   linph install [options]
   linph uninstall [options]
   linph mg <command> [options]
@@ -113,6 +120,8 @@ Commands:
   log         Follow installed logs until Ctrl-C.
   switch-port Update starting ports and restart if running.
   switch-ctry Update regions and restart if running.
+  provider    Inspect or select the active provider.
+  psi         Configure the Psiphon provider.
   install     Install linph, the tunnel-core artifact, and compatibility aliases.
   uninstall   Remove linph and installed artifacts; use --purge to delete config dir.
   mg          Repo-local single-region manager commands.
